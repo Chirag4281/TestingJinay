@@ -744,7 +744,7 @@ elif page == "💰 Sales Entry":
         
         with col2:
             product = st.selectbox("Product", product_list)
-            category = st.selectbox("Category", ["FG Product", "Moulding Product"])
+            category = st.selectbox("Category", ["FG Product", "Moulding Product","RM Product"])
             qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
         
         with col3:
