@@ -571,7 +571,7 @@ with st.sidebar:
     st.caption(f"Last Updated: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
 
 # ======================= DASHBOARD =======================
-if page == "📊 Dashboard":
+if page == " Dashboard":
     st.markdown('<h1 class="main-header">🏭 Jinay ERP Dashboard</h1>', unsafe_allow_html=True)
     
     df_rm_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category='RM Product'")
@@ -594,7 +594,7 @@ if page == "📊 Dashboard":
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📊 Production vs Sales")
+        st.subheader(" Production vs Sales")
         df_chart = fetch_data("""
             SELECT DATE(date) as date, SUM(produced_qty) as production
             FROM production_register GROUP BY DATE(date)
@@ -605,7 +605,7 @@ if page == "📊 Dashboard":
             st.info("No production data")
     
     with col2:
-        st.subheader("🏆 Top Contractors")
+        st.subheader(" Top Contractors")
         df_contractors_prod = fetch_data("""
             SELECT party_name, SUM(produced_qty) as total_produced
             FROM production_register
@@ -668,7 +668,7 @@ elif page == "📦 Masters":
                     st.success(f"✅ Party '{party_name}' added successfully!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+                    st.error(f" Error: {str(e)}")
             else:
                 st.warning("Please enter party name")
         
@@ -849,7 +849,7 @@ elif page == "📦 Masters":
                     st.success(f"✅ Contractor '{cont_name}' added successfully!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+                    st.error(f" Error: {str(e)}")
             else:
                 st.warning("Please enter contractor name")
         
@@ -871,7 +871,7 @@ elif page == "📦 Masters":
                         st.session_state.edit_table = 'contractor'
                         st.rerun()
                 with col_b:
-                    if st.button("🗑️ Delete", key="delete_cont_btn"):
+                    if st.button("️ Delete", key="delete_cont_btn"):
                         execute_query("DELETE FROM contractor_master WHERE contractor_name = ?", (cont_to_edit,))
                         st.success("✅ Contractor deleted!")
                         st.rerun()
@@ -973,11 +973,191 @@ elif page == "🛒 Purchase Entry":
             else:
                 st.warning("Please fill all required fields")
     
-    st.markdown("### Recent Purchases")
-    df_purchases = fetch_data("SELECT challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC LIMIT 50")
-    if not df_purchases.empty:
-        st.dataframe(df_purchases, use_container_width=True)
-        st.metric("Total Purchase Value", f"₹{df_purchases['amount'].sum():,.2f}")
+    st.markdown("---")
+    st.markdown("### 📝 Manage Purchase Entries")
+    
+    df_all_purchases = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC")
+    
+    if not df_all_purchases.empty:
+        # Select record to edit/delete
+        purchase_options = [f"ID:{row['id']} | {row['challan_no']} | {row['product_name']} | {row['qty']} {row['unit']} | {row['date']}" for _, row in df_all_purchases.iterrows()]
+        selected_purchase = st.selectbox("Select Purchase Entry to Edit/Delete", purchase_options, key="select_purchase_manage")
+        
+        # Get selected ID
+        selected_id = int(selected_purchase.split('|')[0].replace('ID:', '').strip()) if selected_purchase else None
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✏️ Edit Selected Purchase", type="primary", key="edit_purchase_btn"):
+                st.session_state.edit_mode = True
+                st.session_state.edit_id = selected_id
+                st.session_state.edit_table = 'purchase'
+                st.rerun()
+        with col2:
+            if st.button("️ Delete Selected Purchase", key="delete_purchase_btn"):
+                if st.session_state.get('confirm_delete_purchase'):
+                    # Get the record details before deleting
+                    record = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (selected_id,))
+                    if not record.empty:
+                        product = record['product_name'].iloc[0]
+                        qty = record['qty'].iloc[0]
+                        date = record['date'].iloc[0]
+                        challan = record['challan_no'].iloc[0]
+                        
+                        # Reverse the inventory update
+                        execute_query("UPDATE rm_inventory SET total_purchased_qty = total_purchased_qty - ? WHERE product_name = ?", (qty, product))
+                        execute_query("UPDATE rm_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (qty, product))
+                        
+                        # Delete the stock movement record
+                        execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
+                        
+                        # Recalculate closing balances for all subsequent movements
+                        movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
+                        if not movements.empty:
+                            running_balance = calculate_rm_opening_balance(product, movements['transaction_date'].iloc[0])
+                            for _, mov in movements.iterrows():
+                                if mov['transaction_type'] == 'PURCHASE':
+                                    running_balance += mov['qty']
+                                elif mov['transaction_type'] == 'CONSUMPTION':
+                                    running_balance -= mov['qty']
+                                execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
+                        
+                        # Delete the transaction
+                        execute_query("DELETE FROM purchase_transactions WHERE id = ?", (selected_id,))
+                        st.success("✅ Purchase entry deleted and inventory updated!")
+                        st.session_state['confirm_delete_purchase'] = False
+                        st.rerun()
+                else:
+                    st.session_state['confirm_delete_purchase'] = True
+                    st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
+        
+        # Edit form
+        if st.session_state.edit_mode and st.session_state.edit_table == 'purchase':
+            st.markdown("### ✏️ Edit Purchase Entry")
+            purchase_data = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (st.session_state.edit_id,))
+            if not purchase_data.empty:
+                row = purchase_data.iloc[0]
+                
+                # Get current parties and products
+                df_parties_edit = fetch_data("""
+                    SELECT party_name FROM party_master 
+                    WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') 
+                    ORDER BY party_name
+                """)
+                df_products_edit = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
+                
+                party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
+                product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
+                product_rates_edit = dict(zip(df_products_edit['product_name'], df_products_edit['rate'])) if not df_products_edit.empty else {}
+                product_units_edit = dict(zip(df_products_edit['product_name'], df_products_edit['unit'])) if not df_products_edit.empty else {}
+                product_categories_edit = dict(zip(df_products_edit['product_name'], df_products_edit['category'])) if not df_products_edit.empty else {}
+                
+                with st.form("edit_purchase_form"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        edit_challan = st.text_input("Challan No", value=row['challan_no'], key="edit_pur_challan")
+                        edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_pur_date")
+                        edit_party = st.selectbox("Party/Moulder/Contractor", 
+                                                  party_list_edit if party_list_edit else [row['party_name']],
+                                                  index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                                                  key="edit_pur_party")
+                    
+                    with col2:
+                        edit_product = st.selectbox("Product", 
+                                                    product_list_edit if product_list_edit else [row['product_name']],
+                                                    index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
+                                                    key="edit_pur_product")
+                        edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"],
+                                                    index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
+                                                    key="edit_pur_category")
+                        edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
+                                                            index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 2,
+                                                            key="edit_pur_prod_cat")
+                        edit_qty = st.number_input("Quantity *", min_value=0.0, value=float(row['qty']), step=1.0, key="edit_pur_qty")
+                    
+                    with col3:
+                        edit_unit = st.selectbox("Unit", unit_options,
+                                                index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                                                key="edit_pur_unit")
+                        edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_pur_rate")
+                        if edit_qty and edit_rate:
+                            amount = edit_qty * edit_rate
+                            st.metric("Total Amount", f"₹{amount:,.2f}")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.form_submit_button("💾 Save Changes", type="primary"):
+                            old_qty = row['qty']
+                            old_product = row['product_name']
+                            old_date = row['date']
+                            old_challan = row['challan_no']
+                            
+                            qty_diff = edit_qty - old_qty
+                            
+                            # Update the transaction
+                            execute_query('''UPDATE purchase_transactions SET 
+                                challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?
+                                WHERE id=?''',
+                                (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
+                            
+                            # Handle inventory changes
+                            if old_product == edit_product:
+                                # Same product - just adjust the difference
+                                if qty_diff != 0:
+                                    execute_query("UPDATE rm_inventory SET total_purchased_qty = total_purchased_qty + ? WHERE product_name = ?", (qty_diff, edit_product))
+                                    execute_query("UPDATE rm_inventory SET closing_stock = closing_stock + ? WHERE product_name = ?", (qty_diff, edit_product))
+                                    
+                                    # Update stock movement
+                                    execute_query("UPDATE rm_stock_movement SET qty = ?, closing_balance = closing_balance + ? WHERE reference_id = ? AND transaction_type = 'PURCHASE'", 
+                                                 (edit_qty, qty_diff, st.session_state.edit_id))
+                                    
+                                    # Recalculate subsequent balances
+                                    movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? AND transaction_date >= ? ORDER BY transaction_date, id", (edit_product, old_date))
+                                    if not movements.empty:
+                                        running_balance = calculate_rm_opening_balance(edit_product, movements['transaction_date'].iloc[0])
+                                        for _, mov in movements.iterrows():
+                                            if mov['transaction_type'] == 'PURCHASE':
+                                                running_balance += mov['qty']
+                                            elif mov['transaction_type'] == 'CONSUMPTION':
+                                                running_balance -= mov['qty']
+                                            execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
+                            else:
+                                # Different product - reverse old, add new
+                                # Reverse old
+                                execute_query("UPDATE rm_inventory SET total_purchased_qty = total_purchased_qty - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("UPDATE rm_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
+                                
+                                # Recalculate old product balances
+                                movements_old = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (old_product,))
+                                if not movements_old.empty:
+                                    running_balance = calculate_rm_opening_balance(old_product, movements_old['transaction_date'].iloc[0])
+                                    for _, mov in movements_old.iterrows():
+                                        if mov['transaction_type'] == 'PURCHASE':
+                                            running_balance += mov['qty']
+                                        elif mov['transaction_type'] == 'CONSUMPTION':
+                                            running_balance -= mov['qty']
+                                        execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
+                                
+                                # Add new
+                                execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (edit_product,))
+                                update_rm_inventory(edit_product, edit_qty, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id)
+                            
+                            st.success("✅ Purchase entry updated successfully!")
+                            st.session_state.edit_mode = False
+                            st.session_state.edit_id = None
+                            st.rerun()
+                    with col2:
+                        if st.form_submit_button("❌ Cancel"):
+                            st.session_state.edit_mode = False
+                            st.session_state.edit_id = None
+                            st.rerun()
+        
+        st.markdown("### All Purchase Entries")
+        st.dataframe(df_all_purchases, use_container_width=True)
+        st.metric("Total Purchase Value", f"{df_all_purchases['amount'].sum():,.2f}")
+    else:
+        st.info("No purchase entries found")
 
 # ======================= PRODUCTION ENTRY =======================
 elif page == "🏭 Production Entry":
@@ -1035,10 +1215,137 @@ elif page == "🏭 Production Entry":
             else:
                 st.warning("Please fill all required fields")
     
-    st.markdown("### Recent Production")
-    df_prod = fetch_data("SELECT challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description FROM production_register ORDER BY date DESC LIMIT 50")
-    if not df_prod.empty:
-        st.dataframe(df_prod, use_container_width=True)
+    st.markdown("---")
+    st.markdown("### 📝 Manage Production Entries")
+    
+    df_all_production = fetch_data("SELECT id, challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description FROM production_register ORDER BY date DESC")
+    
+    if not df_all_production.empty:
+        # Select record to edit/delete
+        production_options = [f"ID:{row['id']} | {row['fg_product']} | {row['produced_qty']} {row['unit']} | {row['party_name']} | {row['date']}" for _, row in df_all_production.iterrows()]
+        selected_production = st.selectbox("Select Production Entry to Edit/Delete", production_options, key="select_production_manage")
+        
+        # Get selected ID
+        selected_id = int(selected_production.split('|')[0].replace('ID:', '').strip()) if selected_production else None
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✏️ Edit Selected Production", type="primary", key="edit_production_btn"):
+                st.session_state.edit_mode = True
+                st.session_state.edit_id = selected_id
+                st.session_state.edit_table = 'production'
+                st.rerun()
+        with col2:
+            if st.button("🗑️ Delete Selected Production", key="delete_production_btn"):
+                if st.session_state.get('confirm_delete_production'):
+                    # Get the record details before deleting
+                    record = fetch_data("SELECT * FROM production_register WHERE id = ?", (selected_id,))
+                    if not record.empty:
+                        product = record['fg_product'].iloc[0]
+                        qty = record['produced_qty'].iloc[0]
+                        
+                        # Reverse the inventory update
+                        execute_query("UPDATE fg_inventory SET produced_qty = produced_qty - ? WHERE product_name = ?", (qty, product))
+                        execute_query("UPDATE fg_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (qty, product))
+                        
+                        # Delete the transaction
+                        execute_query("DELETE FROM production_register WHERE id = ?", (selected_id,))
+                        st.success("✅ Production entry deleted and inventory updated!")
+                        st.session_state['confirm_delete_production'] = False
+                        st.rerun()
+                else:
+                    st.session_state['confirm_delete_production'] = True
+                    st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
+        
+        # Edit form
+        if st.session_state.edit_mode and st.session_state.edit_table == 'production':
+            st.markdown("### ✏️ Edit Production Entry")
+            production_data = fetch_data("SELECT * FROM production_register WHERE id = ?", (st.session_state.edit_id,))
+            if not production_data.empty:
+                row = production_data.iloc[0]
+                
+                # Get current parties and products
+                df_parties_edit = fetch_data("""
+                    SELECT party_name FROM party_master 
+                    WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') 
+                    ORDER BY party_name
+                """)
+                df_products_edit = fetch_data("SELECT product_name, unit, category FROM product_master ORDER BY product_name")
+                
+                party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
+                product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
+                product_units_edit = dict(zip(df_products_edit['product_name'], df_products_edit['unit'])) if not df_products_edit.empty else {}
+                product_categories_edit = dict(zip(df_products_edit['product_name'], df_products_edit['category'])) if not df_products_edit.empty else {}
+                
+                with st.form("edit_production_form"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        edit_challan = st.text_input("Challan No", value=row['challan_no'] if pd.notna(row['challan_no']) else "", key="edit_prod_challan")
+                        edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_prod_date")
+                        edit_party = st.selectbox("Party/Moulder/Contractor", 
+                                                  party_list_edit if party_list_edit else [row['party_name']],
+                                                  index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                                                  key="edit_prod_party")
+                    
+                    with col2:
+                        edit_product = st.selectbox("Product", 
+                                                    product_list_edit if product_list_edit else [row['fg_product']],
+                                                    index=product_list_edit.index(row['fg_product']) if row['fg_product'] in product_list_edit else 0,
+                                                    key="edit_prod_product")
+                        edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
+                                                            index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
+                                                            key="edit_prod_prod_cat")
+                        edit_qty = st.number_input("Produced Qty *", min_value=0.0, value=float(row['produced_qty']), step=1.0, key="edit_prod_qty")
+                        edit_unit = st.selectbox("Unit", unit_options,
+                                                index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                                                key="edit_prod_unit")
+                    
+                    with col3:
+                        edit_description = st.text_area("Description", value=row['description'] if pd.notna(row['description']) else "", key="edit_prod_desc")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.form_submit_button("💾 Save Changes", type="primary"):
+                            old_qty = row['produced_qty']
+                            old_product = row['fg_product']
+                            
+                            qty_diff = edit_qty - old_qty
+                            
+                            # Update the transaction
+                            execute_query('''UPDATE production_register SET 
+                                challan_no=?, date=?, party_name=?, fg_product=?, product_category=?, produced_qty=?, unit=?, description=?
+                                WHERE id=?''',
+                                (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_product_category, edit_qty, edit_unit, edit_description, st.session_state.edit_id))
+                            
+                            # Handle inventory changes
+                            if old_product == edit_product:
+                                # Same product - just adjust the difference
+                                if qty_diff != 0:
+                                    execute_query("UPDATE fg_inventory SET produced_qty = produced_qty + ? WHERE product_name = ?", (qty_diff, edit_product))
+                                    execute_query("UPDATE fg_inventory SET closing_stock = closing_stock + ? WHERE product_name = ?", (qty_diff, edit_product))
+                            else:
+                                # Different product - reverse old, add new
+                                execute_query("UPDATE fg_inventory SET produced_qty = produced_qty - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("UPDATE fg_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (old_qty, old_product))
+                                
+                                execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (edit_product,))
+                                execute_query("UPDATE fg_inventory SET produced_qty = produced_qty + ? WHERE product_name = ?", (edit_qty, edit_product))
+                                execute_query("UPDATE fg_inventory SET closing_stock = closing_stock + ? WHERE product_name = ?", (edit_qty, edit_product))
+                            
+                            st.success("✅ Production entry updated successfully!")
+                            st.session_state.edit_mode = False
+                            st.session_state.edit_id = None
+                            st.rerun()
+                    with col2:
+                        if st.form_submit_button("❌ Cancel"):
+                            st.session_state.edit_mode = False
+                            st.session_state.edit_id = None
+                            st.rerun()
+        
+        st.markdown("### All Production Entries")
+        st.dataframe(df_all_production, use_container_width=True)
+    else:
+        st.info("No production entries found")
 
 # ======================= SALES ENTRY =======================
 elif page == "💰 Sales Entry":
@@ -1107,15 +1414,149 @@ elif page == "💰 Sales Entry":
             else:
                 st.warning("Please fill all required fields")
     
-    st.markdown("### Recent Sales")
-    df_sales = fetch_data("SELECT challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM sales_transactions ORDER BY date DESC LIMIT 50")
-    if not df_sales.empty:
-        st.dataframe(df_sales, use_container_width=True)
-        st.metric("Total Sales Value", f"₹{df_sales['amount'].sum():,.2f}")
+    st.markdown("---")
+    st.markdown("### 📝 Manage Sales Entries")
+    
+    df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM sales_transactions ORDER BY date DESC")
+    
+    if not df_all_sales.empty:
+        # Select record to edit/delete
+        sales_options = [f"ID:{row['id']} | {row['challan_no']} | {row['product_name']} | {row['qty']} {row['unit']} | {row['party_name']} | {row['date']}" for _, row in df_all_sales.iterrows()]
+        selected_sale = st.selectbox("Select Sales Entry to Edit/Delete", sales_options, key="select_sale_manage")
+        
+        # Get selected ID
+        selected_id = int(selected_sale.split('|')[0].replace('ID:', '').strip()) if selected_sale else None
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✏️ Edit Selected Sale", type="primary", key="edit_sale_btn"):
+                st.session_state.edit_mode = True
+                st.session_state.edit_id = selected_id
+                st.session_state.edit_table = 'sale'
+                st.rerun()
+        with col2:
+            if st.button("🗑️ Delete Selected Sale", key="delete_sale_btn"):
+                if st.session_state.get('confirm_delete_sale'):
+                    # Get the record details before deleting
+                    record = fetch_data("SELECT * FROM sales_transactions WHERE id = ?", (selected_id,))
+                    if not record.empty:
+                        product = record['product_name'].iloc[0]
+                        qty = record['qty'].iloc[0]
+                        
+                        # Reverse the inventory update
+                        execute_query("UPDATE fg_inventory SET sold_qty = sold_qty - ? WHERE product_name = ?", (qty, product))
+                        execute_query("UPDATE fg_inventory SET closing_stock = closing_stock + ? WHERE product_name = ?", (qty, product))
+                        
+                        # Delete the transaction
+                        execute_query("DELETE FROM sales_transactions WHERE id = ?", (selected_id,))
+                        st.success("✅ Sales entry deleted and inventory updated!")
+                        st.session_state['confirm_delete_sale'] = False
+                        st.rerun()
+                else:
+                    st.session_state['confirm_delete_sale'] = True
+                    st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
+        
+        # Edit form
+        if st.session_state.edit_mode and st.session_state.edit_table == 'sale':
+            st.markdown("### ✏️ Edit Sales Entry")
+            sales_data = fetch_data("SELECT * FROM sales_transactions WHERE id = ?", (st.session_state.edit_id,))
+            if not sales_data.empty:
+                row = sales_data.iloc[0]
+                
+                # Get current parties and products
+                df_parties_edit = fetch_data("""
+                    SELECT party_name FROM party_master 
+                    WHERE category IN ('Sales Party', 'Moulder', 'Contractor', 'Powder', 'Purchase Party') 
+                    ORDER BY party_name
+                """)
+                df_products_edit = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
+                
+                party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
+                product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
+                product_rates_edit = dict(zip(df_products_edit['product_name'], df_products_edit['rate'])) if not df_products_edit.empty else {}
+                product_units_edit = dict(zip(df_products_edit['product_name'], df_products_edit['unit'])) if not df_products_edit.empty else {}
+                product_categories_edit = dict(zip(df_products_edit['product_name'], df_products_edit['category'])) if not df_products_edit.empty else {}
+                
+                with st.form("edit_sale_form"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        edit_challan = st.text_input("Challan No", value=row['challan_no'], key="edit_sale_challan")
+                        edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_sale_date")
+                        edit_party = st.selectbox("Sales Party", 
+                                                  party_list_edit if party_list_edit else [row['party_name']],
+                                                  index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                                                  key="edit_sale_party")
+                    
+                    with col2:
+                        edit_product = st.selectbox("Product", 
+                                                    product_list_edit if product_list_edit else [row['product_name']],
+                                                    index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
+                                                    key="edit_sale_product")
+                        edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"],
+                                                    index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
+                                                    key="edit_sale_category")
+                        edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
+                                                            index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
+                                                            key="edit_sale_prod_cat")
+                        edit_qty = st.number_input("Quantity *", min_value=0.0, value=float(row['qty']), step=1.0, key="edit_sale_qty")
+                    
+                    with col3:
+                        edit_unit = st.selectbox("Unit", unit_options,
+                                                index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                                                key="edit_sale_unit")
+                        edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_sale_rate")
+                        if edit_qty and edit_rate:
+                            amount = edit_qty * edit_rate
+                            st.metric("Total Amount", f"₹{amount:,.2f}")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.form_submit_button(" Save Changes", type="primary"):
+                            old_qty = row['qty']
+                            old_product = row['product_name']
+                            
+                            qty_diff = edit_qty - old_qty
+                            
+                            # Update the transaction
+                            execute_query('''UPDATE sales_transactions SET 
+                                challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?
+                                WHERE id=?''',
+                                (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
+                            
+                            # Handle inventory changes
+                            if old_product == edit_product:
+                                # Same product - just adjust the difference
+                                if qty_diff != 0:
+                                    execute_query("UPDATE fg_inventory SET sold_qty = sold_qty + ? WHERE product_name = ?", (qty_diff, edit_product))
+                                    execute_query("UPDATE fg_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (qty_diff, edit_product))
+                            else:
+                                # Different product - reverse old, add new
+                                execute_query("UPDATE fg_inventory SET sold_qty = sold_qty - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("UPDATE fg_inventory SET closing_stock = closing_stock + ? WHERE product_name = ?", (old_qty, old_product))
+                                
+                                execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (edit_product,))
+                                execute_query("UPDATE fg_inventory SET sold_qty = sold_qty + ? WHERE product_name = ?", (edit_qty, edit_product))
+                                execute_query("UPDATE fg_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (edit_qty, edit_product))
+                            
+                            st.success("✅ Sales entry updated successfully!")
+                            st.session_state.edit_mode = False
+                            st.session_state.edit_id = None
+                            st.rerun()
+                    with col2:
+                        if st.form_submit_button("❌ Cancel"):
+                            st.session_state.edit_mode = False
+                            st.session_state.edit_id = None
+                            st.rerun()
+        
+        st.markdown("### All Sales Entries")
+        st.dataframe(df_all_sales, use_container_width=True)
+        st.metric("Total Sales Value", f"₹{df_all_sales['amount'].sum():,.2f}")
+    else:
+        st.info("No sales entries found")
 
 # ======================= REJECTIONS =======================
-elif page == "⚠️ Rejections":
-    st.subheader("⚠️ Rejection Management")
+elif page == "️ Rejections":
+    st.subheader("️ Rejection Management")
     
     tab1, tab2 = st.tabs(["Market Rejection", "Party Rejection"])
     
@@ -1302,7 +1743,7 @@ elif page == "📈 Inventory":
 
 # ======================= REPORTS =======================
 elif page == "📋 Reports":
-    st.subheader("📋 Reports & Analytics")
+    st.subheader(" Reports & Analytics")
     
     report_type = st.selectbox("Select Report Type",
         ["Production Summary", "Sales Summary", "Purchase Summary", 
@@ -1389,7 +1830,7 @@ elif page == "📋 Reports":
                 st.dataframe(df, use_container_width=True)
 
 # ======================= IMPORT/EXPORT =======================
-elif page == "📤 Import/Export":
+elif page == " Import/Export":
     st.subheader("📤 Data Import/Export")
     
     tab1, tab2 = st.tabs(["Import Excel", "Export Data"])
