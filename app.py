@@ -115,14 +115,27 @@ def init_db():
         challan_ref TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    # Inventory Tables
+    # Inventory Tables - Track overall stock per product
     cursor.execute('''CREATE TABLE IF NOT EXISTS rm_inventory (
         product_name TEXT PRIMARY KEY,
         opening_stock REAL DEFAULT 0,
-        purchased_qty REAL DEFAULT 0,
-        consumed_qty REAL DEFAULT 0,
+        total_purchased_qty REAL DEFAULT 0,
+        total_consumed_qty REAL DEFAULT 0,
         closing_stock REAL DEFAULT 0,
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # RM Stock Movement - Track each transaction separately with running balance
+    cursor.execute('''CREATE TABLE IF NOT EXISTS rm_stock_movement (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        transaction_date TEXT NOT NULL,
+        challan_no TEXT,
+        product_name TEXT NOT NULL,
+        transaction_type TEXT NOT NULL,
+        qty REAL NOT NULL,
+        opening_balance REAL DEFAULT 0,
+        closing_balance REAL DEFAULT 0,
+        reference_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS fg_inventory (
         product_name TEXT PRIMARY KEY,
@@ -154,12 +167,57 @@ def fetch_data(query, params=()):
     conn.close()
     return df
 
-def update_rm_inventory(product, qty, transaction_type='PURCHASE'):
+def calculate_rm_opening_balance(product_name, before_date=None):
+    """Calculate opening balance for a product up to a specific date"""
+    if before_date:
+        query = """
+            SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty 
+                                    WHEN transaction_type='CONSUMPTION' THEN -qty 
+                                    ELSE 0 END), 0) as balance
+            FROM rm_stock_movement 
+            WHERE product_name = ? AND transaction_date < ?
+        """
+        result = fetch_data(query, (product_name, before_date))
+    else:
+        query = """
+            SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty 
+                                    WHEN transaction_type='CONSUMPTION' THEN -qty 
+                                    ELSE 0 END), 0) as balance
+            FROM rm_stock_movement 
+            WHERE product_name = ?
+        """
+        result = fetch_data(query, (product_name,))
+    
+    return result['balance'].iloc[0] if not result.empty else 0
+
+def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None):
+    """Update RM inventory with proper running balance tracking"""
+    
+    # Calculate opening balance before this transaction
+    opening_balance = calculate_rm_opening_balance(product, transaction_date)
+    
+    # Calculate closing balance
     if transaction_type == 'PURCHASE':
-        execute_query("UPDATE rm_inventory SET purchased_qty = purchased_qty + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'CONSUME':
-        execute_query("UPDATE rm_inventory SET consumed_qty = consumed_qty + ? WHERE product_name = ?", (qty, product))
-    execute_query("UPDATE rm_inventory SET closing_stock = opening_stock + purchased_qty - consumed_qty WHERE product_name = ?", (product,))
+        closing_balance = opening_balance + qty
+        # Update total purchased
+        execute_query("UPDATE rm_inventory SET total_purchased_qty = total_purchased_qty + ? WHERE product_name = ?", (qty, product))
+    elif transaction_type == 'CONSUMPTION':
+        closing_balance = opening_balance - qty
+        # Update total consumed
+        execute_query("UPDATE rm_inventory SET total_consumed_qty = total_consumed_qty + ? WHERE product_name = ?", (qty, product))
+    else:
+        closing_balance = opening_balance
+    
+    # Record the movement
+    execute_query('''INSERT INTO rm_stock_movement 
+        (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+        (transaction_date, challan_no, product, transaction_type, qty, opening_balance, closing_balance, reference_id))
+    
+    # Update closing stock in main inventory
+    execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_balance, product))
+    
+    return closing_balance
 
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     if transaction_type == 'PRODUCE':
@@ -196,11 +254,15 @@ def import_rm_sheet(df):
                 product = str(col).strip()
                 execute_query("INSERT OR IGNORE INTO product_master (product_name, category) VALUES (?, 'RM Product')", (product,))
                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (product,))
-                execute_query('''INSERT INTO purchase_transactions 
+                
+                # Insert purchase transaction
+                purchase_id = execute_query('''INSERT INTO purchase_transactions 
                     (challan_no, date, party_name, product_name, qty, entry_type)
                     VALUES (?, ?, ?, ?, ?, 'PURCHASE')''',
                     (challan_no, date, contractor, product, float(qty)))
-                update_rm_inventory(product, float(qty), 'PURCHASE')
+                
+                # Update inventory with running balance
+                update_rm_inventory(product, float(qty), 'PURCHASE', date, challan_no, purchase_id)
                 records_imported += 1
     
     return records_imported
@@ -812,12 +874,17 @@ elif page == "🛒 Purchase Entry":
         if submitted:
             if all([challan_no, party, product, qty > 0]):
                 try:
-                    execute_query('''INSERT INTO purchase_transactions 
+                    # Insert purchase transaction
+                    purchase_id = execute_query('''INSERT INTO purchase_transactions 
                         (challan_no, date, party_name, product_name, category, qty, unit, rate, amount, entry_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
                         (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, qty, unit, rate, qty*rate))
+                    
                     execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (product,))
-                    update_rm_inventory(product, qty, 'PURCHASE')
+                    
+                    # Update inventory with running balance
+                    update_rm_inventory(product, qty, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id)
+                    
                     st.success("✅ Purchase entry saved successfully!")
                     st.rerun()
                 except Exception as e:
@@ -1028,12 +1095,12 @@ elif page == "⚠️ Rejections":
 elif page == "📈 Inventory":
     st.subheader("📈 Inventory Management")
     
-    tab1, tab2 = st.tabs(["RM Inventory", "FG Inventory"])
+    tab1, tab2, tab3 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory"])
     
     with tab1:
-        st.markdown("### RM (Raw Material) Inventory")
+        st.markdown("### RM (Raw Material) Inventory Summary")
         df_rm_inv = fetch_data("""
-            SELECT i.product_name, i.opening_stock, i.purchased_qty, i.consumed_qty, i.closing_stock, m.rate, m.unit
+            SELECT i.product_name, i.opening_stock, i.total_purchased_qty, i.total_consumed_qty, i.closing_stock, m.rate, m.unit
             FROM rm_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name 
             WHERE m.category='RM Product' OR m.category IS NULL
             ORDER BY i.product_name
@@ -1043,7 +1110,7 @@ elif page == "📈 Inventory":
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total RM Products", len(df_rm_inv))
             with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate'].fillna(0)).sum():,.2f}")
-            with col3: st.metric("Total Purchased", f"{df_rm_inv['purchased_qty'].sum():,.0f}")
+            with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
             
             st.dataframe(df_rm_inv, use_container_width=True)
             
@@ -1055,13 +1122,51 @@ elif page == "📈 Inventory":
             if st.button("Update Opening Stock", type="primary"):
                 if rm_product:
                     execute_query("UPDATE rm_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, rm_product))
-                    execute_query("UPDATE rm_inventory SET closing_stock = opening_stock + purchased_qty - consumed_qty WHERE product_name = ?", (rm_product,))
+                    # Recalculate closing stock
+                    current_purchased = fetch_data("SELECT total_purchased_qty FROM rm_inventory WHERE product_name = ?", (rm_product,))['total_purchased_qty'].iloc[0]
+                    current_consumed = fetch_data("SELECT total_consumed_qty FROM rm_inventory WHERE product_name = ?", (rm_product,))['total_consumed_qty'].iloc[0]
+                    new_closing = new_opening + current_purchased - current_consumed
+                    execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (new_closing, rm_product))
                     st.success("✅ Opening stock updated!")
                     st.rerun()
         else:
             st.info("No RM inventory data available")
     
     with tab2:
+        st.markdown("### RM Stock Movement (Detailed)")
+        st.info("This shows each transaction with running balance")
+        
+        # Get unique products
+        df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
+        
+        if not df_products.empty:
+            selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist())
+            
+            df_movement = fetch_data("""
+                SELECT transaction_date, challan_no, transaction_type, qty, opening_balance, closing_balance
+                FROM rm_stock_movement 
+                WHERE product_name = ?
+                ORDER BY transaction_date, id
+            """, (selected_product,))
+            
+            if not df_movement.empty:
+                st.dataframe(df_movement, use_container_width=True)
+                
+                # Show summary
+                col1, col2, col3 = st.columns(3)
+                total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
+                total_consumptions = df_movement[df_movement['transaction_type']=='CONSUMPTION']['qty'].sum()
+                final_balance = df_movement['closing_balance'].iloc[-1]
+                
+                with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
+                with col2: st.metric("Total Consumptions", f"{total_consumptions:,.0f}")
+                with col3: st.metric("Current Balance", f"{final_balance:,.0f}")
+            else:
+                st.info("No movement records for this product")
+        else:
+            st.info("No RM stock movement data available")
+    
+    with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
         df_fg_inv = fetch_data("""
             SELECT i.product_name, i.opening_stock, i.produced_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
@@ -1171,7 +1276,7 @@ elif page == "📋 Reports":
         tab1, tab2 = st.tabs(["RM Movement", "FG Movement"])
         
         with tab1:
-            df = fetch_data("SELECT product_name, opening_stock, purchased_qty as additions, consumed_qty as deductions, closing_stock FROM rm_inventory ORDER BY product_name")
+            df = fetch_data("SELECT product_name, opening_stock, total_purchased_qty as additions, total_consumed_qty as deductions, closing_stock FROM rm_inventory ORDER BY product_name")
             if not df.empty:
                 st.dataframe(df, use_container_width=True)
         
