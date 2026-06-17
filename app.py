@@ -33,7 +33,7 @@ def init_db():
         gst_no TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    # Combined Product Master (RM, FG, Moulding)
+    # Combined Product Master (RM, FG, Moulding, Powder)
     cursor.execute('''CREATE TABLE IF NOT EXISTS product_master (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         product_name TEXT UNIQUE NOT NULL,
@@ -391,10 +391,36 @@ st.markdown("""
         color: #666;
         margin-top: 0.5rem;
     }
+    .edit-btn {
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        margin: 2px;
+        border-radius: 3px;
+        cursor: pointer;
+    }
+    .delete-btn {
+        background-color: #f44336;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        margin: 2px;
+        border-radius: 3px;
+        cursor: pointer;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 init_db()
+
+# Initialize session state for edit mode
+if 'edit_mode' not in st.session_state:
+    st.session_state.edit_mode = False
+if 'edit_id' not in st.session_state:
+    st.session_state.edit_id = None
+if 'edit_table' not in st.session_state:
+    st.session_state.edit_table = None
 
 # ======================= SIDEBAR =======================
 with st.sidebar:
@@ -417,7 +443,7 @@ if page == "📊 Dashboard":
     st.markdown('<h1 class="main-header">🏭 Jinay ERP Dashboard</h1>', unsafe_allow_html=True)
     
     df_rm_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category='RM Product'")
-    df_fg_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category IN ('FG Product', 'Moulding Product')")
+    df_fg_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'Powder')")
     df_total_production = fetch_data("SELECT SUM(qty_produced) as total FROM production_register")
     df_total_sales = fetch_data("SELECT SUM(qty) as total_qty FROM sales_transactions")
     
@@ -492,7 +518,7 @@ elif page == "📦 Masters":
         col1, col2 = st.columns(2)
         with col1:
             party_name = st.text_input("Party Name *", key="party_name")
-            party_category = st.selectbox("Category", ["Purchase Party", "Moulder", "Sales Party", "Contractor"], key="party_category")
+            party_category = st.selectbox("Category", ["Purchase Party", "Moulder", "Sales Party", "Contractor", "Powder"], key="party_category")
             contact_person = st.text_input("Contact Person", key="party_contact_person")
             phone = st.text_input("Phone", key="party_phone")
         with col2:
@@ -517,24 +543,68 @@ elif page == "📦 Masters":
         st.markdown("### Party List")
         df_parties = fetch_data("SELECT * FROM party_master ORDER BY party_name")
         if not df_parties.empty:
-            # Add Edit/Delete functionality
-            edit_col, delete_col = st.columns([4, 1])
-            with edit_col:
-                st.dataframe(df_parties, use_container_width=True)
-            with delete_col:
-                st.markdown("**Actions**")
-                party_to_delete = st.selectbox("Select Party to Delete", df_parties['party_name'].tolist(), key="delete_party_select")
-                if st.button("🗑️ Delete", key="delete_party_btn"):
-                    execute_query("DELETE FROM party_master WHERE party_name = ?", (party_to_delete,))
-                    st.success("✅ Party deleted!")
-                    st.rerun()
+            st.dataframe(df_parties, use_container_width=True)
+            
+            st.markdown("### Edit/Delete Party")
+            col1, col2 = st.columns(2)
+            with col1:
+                party_to_edit = st.selectbox("Select Party to Edit/Delete", df_parties['party_name'].tolist(), key="select_party_edit")
+            with col2:
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("✏️ Edit", key="edit_party_btn"):
+                        st.session_state.edit_mode = True
+                        st.session_state.edit_id = party_to_edit
+                        st.session_state.edit_table = 'party'
+                        st.rerun()
+                with col_b:
+                    if st.button("🗑️ Delete", key="delete_party_btn"):
+                        execute_query("DELETE FROM party_master WHERE party_name = ?", (party_to_edit,))
+                        st.success("✅ Party deleted!")
+                        st.rerun()
+            
+            # Edit form
+            if st.session_state.edit_mode and st.session_state.edit_table == 'party':
+                st.markdown("### Edit Party")
+                party_data = fetch_data("SELECT * FROM party_master WHERE party_name = ?", (st.session_state.edit_id,))
+                if not party_data.empty:
+                    with st.form("edit_party_form"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            edit_party_name = st.text_input("Party Name", value=party_data['party_name'].iloc[0], key="edit_party_name_field")
+                            edit_party_category = st.selectbox("Category", ["Purchase Party", "Moulder", "Sales Party", "Contractor", "Powder"], 
+                                                              index=["Purchase Party", "Moulder", "Sales Party", "Contractor", "Powder"].index(party_data['category'].iloc[0]) if party_data['category'].iloc[0] in ["Purchase Party", "Moulder", "Sales Party", "Contractor", "Powder"] else 0, 
+                                                              key="edit_party_category_field")
+                            edit_contact_person = st.text_input("Contact Person", value=party_data['contact_person'].iloc[0] if pd.notna(party_data['contact_person'].iloc[0]) else "", key="edit_party_contact_field")
+                            edit_phone = st.text_input("Phone", value=party_data['phone'].iloc[0] if pd.notna(party_data['phone'].iloc[0]) else "", key="edit_party_phone_field")
+                        with col2:
+                            edit_email = st.text_input("Email", value=party_data['email'].iloc[0] if pd.notna(party_data['email'].iloc[0]) else "", key="edit_party_email_field")
+                            edit_address = st.text_area("Address", value=party_data['address'].iloc[0] if pd.notna(party_data['address'].iloc[0]) else "", key="edit_party_address_field")
+                            edit_gst_no = st.text_input("GST Number", value=party_data['gst_no'].iloc[0] if pd.notna(party_data['gst_no'].iloc[0]) else "", key="edit_party_gst_field")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.form_submit_button("💾 Save Changes", type="primary"):
+                                execute_query('''UPDATE party_master SET 
+                                    party_name=?, category=?, contact_person=?, phone=?, email=?, address=?, gst_no=?
+                                    WHERE party_name=?''',
+                                    (edit_party_name, edit_party_category, edit_contact_person, edit_phone, edit_email, edit_address, edit_gst_no, st.session_state.edit_id))
+                                st.success("✅ Party updated successfully!")
+                                st.session_state.edit_mode = False
+                                st.session_state.edit_id = None
+                                st.rerun()
+                        with col2:
+                            if st.form_submit_button("❌ Cancel"):
+                                st.session_state.edit_mode = False
+                                st.session_state.edit_id = None
+                                st.rerun()
     
     with tab2:
         st.markdown("### Add Product")
         col1, col2 = st.columns(2)
         with col1:
             product_name = st.text_input("Product Name *", key="product_name")
-            product_category = st.selectbox("Category", ["RM Product", "FG Product", "Moulding Product"], key="product_category")
+            product_category = st.selectbox("Category", ["RM Product", "FG Product", "Moulding Product", "Powder"], key="product_category")
             unit = st.text_input("Unit", value="PCS", key="product_unit")
             rate = st.number_input("Rate", min_value=0.0, step=0.01, key="product_rate")
         with col2:
@@ -568,16 +638,63 @@ elif page == "📦 Masters":
         st.markdown("### Products List")
         df_products = fetch_data("SELECT * FROM product_master ORDER BY product_name")
         if not df_products.empty:
-            col1, col2 = st.columns([4, 1])
+            st.dataframe(df_products, use_container_width=True)
+            
+            st.markdown("### Edit/Delete Product")
+            col1, col2 = st.columns(2)
             with col1:
-                st.dataframe(df_products, use_container_width=True)
+                product_to_edit = st.selectbox("Select Product to Edit/Delete", df_products['product_name'].tolist(), key="select_product_edit")
             with col2:
-                st.markdown("**Actions**")
-                product_to_delete = st.selectbox("Select Product to Delete", df_products['product_name'].tolist(), key="delete_product_select")
-                if st.button("🗑️ Delete", key="delete_product_btn"):
-                    execute_query("DELETE FROM product_master WHERE product_name = ?", (product_to_delete,))
-                    st.success("✅ Product deleted!")
-                    st.rerun()
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("✏️ Edit", key="edit_product_btn"):
+                        st.session_state.edit_mode = True
+                        st.session_state.edit_id = product_to_edit
+                        st.session_state.edit_table = 'product'
+                        st.rerun()
+                with col_b:
+                    if st.button("🗑️ Delete", key="delete_product_btn"):
+                        execute_query("DELETE FROM product_master WHERE product_name = ?", (product_to_edit,))
+                        st.success("✅ Product deleted!")
+                        st.rerun()
+            
+            # Edit form
+            if st.session_state.edit_mode and st.session_state.edit_table == 'product':
+                st.markdown("### Edit Product")
+                product_data = fetch_data("SELECT * FROM product_master WHERE product_name = ?", (st.session_state.edit_id,))
+                if not product_data.empty:
+                    with st.form("edit_product_form"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            edit_product_name = st.text_input("Product Name", value=product_data['product_name'].iloc[0], key="edit_product_name_field")
+                            edit_product_category = st.selectbox("Category", ["RM Product", "FG Product", "Moulding Product", "Powder"], 
+                                                                index=["RM Product", "FG Product", "Moulding Product", "Powder"].index(product_data['category'].iloc[0]) if product_data['category'].iloc[0] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else 0, 
+                                                                key="edit_product_category_field")
+                            edit_unit = st.text_input("Unit", value=product_data['unit'].iloc[0] if pd.notna(product_data['unit'].iloc[0]) else "PCS", key="edit_product_unit_field")
+                            edit_rate = st.number_input("Rate", min_value=0.0, value=float(product_data['rate'].iloc[0]) if pd.notna(product_data['rate'].iloc[0]) else 0.0, step=0.01, key="edit_product_rate_field")
+                        with col2:
+                            edit_per_pc_wt = st.number_input("Per Pc Weight", min_value=0.0, value=float(product_data['per_pc_wt'].iloc[0]) if pd.notna(product_data['per_pc_wt'].iloc[0]) else 0.0, step=0.001, key="edit_product_weight_field")
+                            edit_dim_h = st.number_input("Dimension H", min_value=0.0, value=float(product_data['dimension_h'].iloc[0]) if pd.notna(product_data['dimension_h'].iloc[0]) else 0.0, step=0.01, key="edit_product_dim_h_field")
+                            edit_dim_w = st.number_input("Dimension W", min_value=0.0, value=float(product_data['dimension_w'].iloc[0]) if pd.notna(product_data['dimension_w'].iloc[0]) else 0.0, step=0.01, key="edit_product_dim_w_field")
+                            edit_dim_l = st.number_input("Dimension L", min_value=0.0, value=float(product_data['dimension_l'].iloc[0]) if pd.notna(product_data['dimension_l'].iloc[0]) else 0.0, step=0.01, key="edit_product_dim_l_field")
+                            edit_description = st.text_area("Description", value=product_data['description'].iloc[0] if pd.notna(product_data['description'].iloc[0]) else "", key="edit_product_desc_field")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.form_submit_button("💾 Save Changes", type="primary"):
+                                execute_query('''UPDATE product_master SET 
+                                    product_name=?, category=?, unit=?, rate=?, per_pc_wt=?, dimension_h=?, dimension_w=?, dimension_l=?, description=?
+                                    WHERE product_name=?''',
+                                    (edit_product_name, edit_product_category, edit_unit, edit_rate, edit_per_pc_wt, edit_dim_h, edit_dim_w, edit_dim_l, edit_description, st.session_state.edit_id))
+                                st.success("✅ Product updated successfully!")
+                                st.session_state.edit_mode = False
+                                st.session_state.edit_id = None
+                                st.rerun()
+                        with col2:
+                            if st.form_submit_button("❌ Cancel"):
+                                st.session_state.edit_mode = False
+                                st.session_state.edit_id = None
+                                st.rerun()
     
     with tab3:
         st.markdown("### Add Contractor")
@@ -607,23 +724,64 @@ elif page == "📦 Masters":
         st.markdown("### Contractors List")
         df_cont = fetch_data("SELECT * FROM contractor_master ORDER BY contractor_name")
         if not df_cont.empty:
-            col1, col2 = st.columns([4, 1])
+            st.dataframe(df_cont, use_container_width=True)
+            
+            st.markdown("### Edit/Delete Contractor")
+            col1, col2 = st.columns(2)
             with col1:
-                st.dataframe(df_cont, use_container_width=True)
+                cont_to_edit = st.selectbox("Select Contractor to Edit/Delete", df_cont['contractor_name'].tolist(), key="select_cont_edit")
             with col2:
-                st.markdown("**Actions**")
-                cont_to_delete = st.selectbox("Select Contractor to Delete", df_cont['contractor_name'].tolist(), key="delete_cont_select")
-                if st.button("🗑️ Delete", key="delete_cont_btn"):
-                    execute_query("DELETE FROM contractor_master WHERE contractor_name = ?", (cont_to_delete,))
-                    st.success("✅ Contractor deleted!")
-                    st.rerun()
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("✏️ Edit", key="edit_cont_btn"):
+                        st.session_state.edit_mode = True
+                        st.session_state.edit_id = cont_to_edit
+                        st.session_state.edit_table = 'contractor'
+                        st.rerun()
+                with col_b:
+                    if st.button("🗑️ Delete", key="delete_cont_btn"):
+                        execute_query("DELETE FROM contractor_master WHERE contractor_name = ?", (cont_to_edit,))
+                        st.success("✅ Contractor deleted!")
+                        st.rerun()
+            
+            # Edit form
+            if st.session_state.edit_mode and st.session_state.edit_table == 'contractor':
+                st.markdown("### Edit Contractor")
+                cont_data = fetch_data("SELECT * FROM contractor_master WHERE contractor_name = ?", (st.session_state.edit_id,))
+                if not cont_data.empty:
+                    with st.form("edit_contractor_form"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            edit_cont_name = st.text_input("Contractor Name", value=cont_data['contractor_name'].iloc[0], key="edit_cont_name_field")
+                            edit_cont_person = st.text_input("Contact Person", value=cont_data['contact_person'].iloc[0] if pd.notna(cont_data['contact_person'].iloc[0]) else "", key="edit_cont_person_field")
+                            edit_cont_phone = st.text_input("Phone", value=cont_data['phone'].iloc[0] if pd.notna(cont_data['phone'].iloc[0]) else "", key="edit_cont_phone_field")
+                        with col2:
+                            edit_cont_address = st.text_area("Address", value=cont_data['address'].iloc[0] if pd.notna(cont_data['address'].iloc[0]) else "", key="edit_cont_address_field")
+                            edit_cont_gst = st.text_input("GST Number", value=cont_data['gst_no'].iloc[0] if pd.notna(cont_data['gst_no'].iloc[0]) else "", key="edit_cont_gst_field")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.form_submit_button("💾 Save Changes", type="primary"):
+                                execute_query('''UPDATE contractor_master SET 
+                                    contractor_name=?, contact_person=?, phone=?, address=?, gst_no=?
+                                    WHERE contractor_name=?''',
+                                    (edit_cont_name, edit_cont_person, edit_cont_phone, edit_cont_address, edit_cont_gst, st.session_state.edit_id))
+                                st.success("✅ Contractor updated successfully!")
+                                st.session_state.edit_mode = False
+                                st.session_state.edit_id = None
+                                st.rerun()
+                        with col2:
+                            if st.form_submit_button("❌ Cancel"):
+                                st.session_state.edit_mode = False
+                                st.session_state.edit_id = None
+                                st.rerun()
 
 # ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
     st.subheader("🛒 Purchase Entry")
     
-    df_parties = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Purchase Party', 'Moulder', 'Contractor') ORDER BY party_name")
-    df_products = fetch_data("SELECT product_name, rate, unit FROM product_master WHERE category='RM Product' ORDER BY product_name")
+    df_parties = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') ORDER BY party_name")
+    df_products = fetch_data("SELECT product_name, rate, unit FROM product_master WHERE category IN ('RM Product', 'Powder') ORDER BY product_name")
     
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
@@ -639,7 +797,7 @@ elif page == "🛒 Purchase Entry":
         
         with col2:
             product = st.selectbox("Product", product_list)
-            category = st.selectbox("Category", ["Party", "Moulder", "Contractor"])
+            category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"])
             qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
         
         with col3:
@@ -678,7 +836,7 @@ elif page == "🏭 Production Entry":
     st.subheader("🏭 Production Entry")
     
     df_cont = fetch_data("SELECT contractor_name FROM contractor_master ORDER BY contractor_name")
-    df_products = fetch_data("SELECT product_name, unit FROM product_master WHERE category IN ('FG Product', 'Moulding Product') ORDER BY product_name")
+    df_products = fetch_data("SELECT product_name, unit FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'Powder') ORDER BY product_name")
     
     contractor_list = df_cont['contractor_name'].tolist() if not df_cont.empty else []
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
@@ -728,7 +886,7 @@ elif page == "💰 Sales Entry":
     st.subheader("💰 Sales Entry")
     
     df_parties = fetch_data("SELECT party_name FROM party_master WHERE category='Sales Party' ORDER BY party_name")
-    df_products = fetch_data("SELECT product_name, rate, unit FROM product_master WHERE category IN ('FG Product', 'Moulding Product') ORDER BY product_name")
+    df_products = fetch_data("SELECT product_name, rate, unit FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'RM Product', 'Powder') ORDER BY product_name")
     
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
@@ -744,7 +902,7 @@ elif page == "💰 Sales Entry":
         
         with col2:
             product = st.selectbox("Product", product_list)
-            category = st.selectbox("Category", ["FG Product", "Moulding Product","RM Product"])
+            category = st.selectbox("Category", ["FG Product", "Moulding Product", "RM Product", "Powder"])
             qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
         
         with col3:
@@ -908,7 +1066,7 @@ elif page == "📈 Inventory":
         df_fg_inv = fetch_data("""
             SELECT i.product_name, i.opening_stock, i.produced_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
             FROM fg_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name 
-            WHERE m.category IN ('FG Product', 'Moulding Product') OR m.category IS NULL
+            WHERE m.category IN ('FG Product', 'Moulding Product', 'Powder') OR m.category IS NULL
             ORDER BY i.product_name
         """)
         
