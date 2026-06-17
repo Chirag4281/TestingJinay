@@ -571,7 +571,7 @@ with st.sidebar:
     st.caption(f"Last Updated: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
 
 # ======================= DASHBOARD =======================
-if page == " Dashboard":
+if page == "📊 Dashboard":
     st.markdown('<h1 class="main-header">🏭 Jinay ERP Dashboard</h1>', unsafe_allow_html=True)
     
     df_rm_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category='RM Product'")
@@ -594,7 +594,7 @@ if page == " Dashboard":
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader(" Production vs Sales")
+        st.subheader("📊 Production vs Sales")
         df_chart = fetch_data("""
             SELECT DATE(date) as date, SUM(produced_qty) as production
             FROM production_register GROUP BY DATE(date)
@@ -605,7 +605,7 @@ if page == " Dashboard":
             st.info("No production data")
     
     with col2:
-        st.subheader(" Top Contractors")
+        st.subheader("🏆 Top Contractors")
         df_contractors_prod = fetch_data("""
             SELECT party_name, SUM(produced_qty) as total_produced
             FROM production_register
@@ -668,7 +668,7 @@ elif page == "📦 Masters":
                     st.success(f"✅ Party '{party_name}' added successfully!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f" Error: {str(e)}")
+                    st.error(f"❌ Error: {str(e)}")
             else:
                 st.warning("Please enter party name")
         
@@ -849,7 +849,7 @@ elif page == "📦 Masters":
                     st.success(f"✅ Contractor '{cont_name}' added successfully!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f" Error: {str(e)}")
+                    st.error(f"❌ Error: {str(e)}")
             else:
                 st.warning("Please enter contractor name")
         
@@ -871,7 +871,7 @@ elif page == "📦 Masters":
                         st.session_state.edit_table = 'contractor'
                         st.rerun()
                 with col_b:
-                    if st.button("️ Delete", key="delete_cont_btn"):
+                    if st.button("🗑️ Delete", key="delete_cont_btn"):
                         execute_query("DELETE FROM contractor_master WHERE contractor_name = ?", (cont_to_edit,))
                         st.success("✅ Contractor deleted!")
                         st.rerun()
@@ -994,7 +994,7 @@ elif page == "🛒 Purchase Entry":
                 st.session_state.edit_table = 'purchase'
                 st.rerun()
         with col2:
-            if st.button("️ Delete Selected Purchase", key="delete_purchase_btn"):
+            if st.button("🗑️ Delete Selected Purchase", key="delete_purchase_btn"):
                 if st.session_state.get('confirm_delete_purchase'):
                     # Get the record details before deleting
                     record = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (selected_id,))
@@ -1155,7 +1155,7 @@ elif page == "🛒 Purchase Entry":
         
         st.markdown("### All Purchase Entries")
         st.dataframe(df_all_purchases, use_container_width=True)
-        st.metric("Total Purchase Value", f"{df_all_purchases['amount'].sum():,.2f}")
+        st.metric("Total Purchase Value", f"₹{df_all_purchases['amount'].sum():,.2f}")
     else:
         st.info("No purchase entries found")
 
@@ -1511,7 +1511,7 @@ elif page == "💰 Sales Entry":
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.form_submit_button(" Save Changes", type="primary"):
+                        if st.form_submit_button("💾 Save Changes", type="primary"):
                             old_qty = row['qty']
                             old_product = row['product_name']
                             
@@ -1555,8 +1555,8 @@ elif page == "💰 Sales Entry":
         st.info("No sales entries found")
 
 # ======================= REJECTIONS =======================
-elif page == "️ Rejections":
-    st.subheader("️ Rejection Management")
+elif page == "⚠️ Rejections":
+    st.subheader("⚠️ Rejection Management")
     
     tab1, tab2 = st.tabs(["Market Rejection", "Party Rejection"])
     
@@ -1743,7 +1743,7 @@ elif page == "📈 Inventory":
 
 # ======================= REPORTS =======================
 elif page == "📋 Reports":
-    st.subheader(" Reports & Analytics")
+    st.subheader("📋 Reports & Analytics")
     
     report_type = st.selectbox("Select Report Type",
         ["Production Summary", "Sales Summary", "Purchase Summary", 
@@ -1830,7 +1830,7 @@ elif page == "📋 Reports":
                 st.dataframe(df, use_container_width=True)
 
 # ======================= IMPORT/EXPORT =======================
-elif page == " Import/Export":
+elif page == "📤 Import/Export":
     st.subheader("📤 Data Import/Export")
     
     tab1, tab2 = st.tabs(["Import Excel", "Export Data"])
