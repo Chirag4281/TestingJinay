@@ -172,29 +172,49 @@ def migrate_database(cursor):
         if 'consumed_qty' in columns and 'total_consumed_qty' not in columns:
             cursor.execute("ALTER TABLE rm_inventory RENAME COLUMN consumed_qty TO total_consumed_qty")
             print("✅ Migrated: consumed_qty -> total_consumed_qty")
-            
-        # Add product_category column if not exists
+        
+        # ======================= MIGRATE PURCHASE TRANSACTIONS =======================
         cursor.execute("PRAGMA table_info(purchase_transactions)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'product_category' not in columns:
             cursor.execute("ALTER TABLE purchase_transactions ADD COLUMN product_category TEXT")
             print("✅ Added product_category to purchase_transactions")
         
+        # ======================= MIGRATE SALES TRANSACTIONS =======================
         cursor.execute("PRAGMA table_info(sales_transactions)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'product_category' not in columns:
             cursor.execute("ALTER TABLE sales_transactions ADD COLUMN product_category TEXT")
             print("✅ Added product_category to sales_transactions")
         
+        # ======================= MIGRATE PRODUCTION REGISTER =======================
         cursor.execute("PRAGMA table_info(production_register)")
         columns = [row[1] for row in cursor.fetchall()]
+        
+        # Rename qty_produced to produced_qty
+        if 'qty_produced' in columns and 'produced_qty' not in columns:
+            cursor.execute("ALTER TABLE production_register RENAME COLUMN qty_produced TO produced_qty")
+            print("✅ Migrated: qty_produced -> produced_qty")
+        
+        # Rename contractor_name to party_name
+        if 'contractor_name' in columns and 'party_name' not in columns:
+            cursor.execute("ALTER TABLE production_register RENAME COLUMN contractor_name TO party_name")
+            print("✅ Migrated: contractor_name -> party_name")
+        
+        # Add product_category column
         if 'product_category' not in columns:
             cursor.execute("ALTER TABLE production_register ADD COLUMN product_category TEXT")
             print("✅ Added product_category to production_register")
         
-        if 'party_name' not in columns:
+        # Add party_name if neither exists (fresh table scenario)
+        if 'party_name' not in columns and 'contractor_name' not in columns:
             cursor.execute("ALTER TABLE production_register ADD COLUMN party_name TEXT")
             print("✅ Added party_name to production_register")
+        
+        # Add produced_qty if neither exists
+        if 'produced_qty' not in columns and 'qty_produced' not in columns:
+            cursor.execute("ALTER TABLE production_register ADD COLUMN produced_qty REAL NOT NULL DEFAULT 0")
+            print("✅ Added produced_qty to production_register")
             
     except Exception as e:
         print(f"Migration warning: {e}")
@@ -556,7 +576,7 @@ if page == "📊 Dashboard":
     
     df_rm_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category='RM Product'")
     df_fg_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'Powder')")
-    df_total_production = fetch_data("SELECT SUM(qty_produced) as total FROM production_register")
+    df_total_production = fetch_data("SELECT SUM(produced_qty) as total FROM production_register")
     df_total_sales = fetch_data("SELECT SUM(qty) as total_qty FROM sales_transactions")
     
     col1, col2, col3, col4 = st.columns(4)
@@ -576,7 +596,7 @@ if page == "📊 Dashboard":
     with col1:
         st.subheader("📊 Production vs Sales")
         df_chart = fetch_data("""
-            SELECT DATE(date) as date, SUM(qty_produced) as production
+            SELECT DATE(date) as date, SUM(produced_qty) as production
             FROM production_register GROUP BY DATE(date)
         """)
         if not df_chart.empty:
@@ -587,14 +607,14 @@ if page == "📊 Dashboard":
     with col2:
         st.subheader("🏆 Top Contractors")
         df_contractors_prod = fetch_data("""
-            SELECT contractor_name, SUM(qty_produced) as total_produced
+            SELECT party_name, SUM(produced_qty) as total_produced
             FROM production_register
-            GROUP BY contractor_name
+            GROUP BY party_name
             ORDER BY total_produced DESC
             LIMIT 10
         """)
         if not df_contractors_prod.empty:
-            st.bar_chart(df_contractors_prod.set_index('contractor_name')['total_produced'])
+            st.bar_chart(df_contractors_prod.set_index('party_name')['total_produced'])
         else:
             st.info("No contractor data")
     
@@ -609,7 +629,7 @@ if page == "📊 Dashboard":
     
     with col2:
         st.markdown("**Recent Production**")
-        df_recent_prod = fetch_data("SELECT contractor_name, fg_product, qty_produced, date FROM production_register ORDER BY date DESC LIMIT 5")
+        df_recent_prod = fetch_data("SELECT party_name, fg_product, produced_qty, date FROM production_register ORDER BY date DESC LIMIT 5")
         if not df_recent_prod.empty:
             st.dataframe(df_recent_prod, use_container_width=True)
     
@@ -1199,10 +1219,10 @@ elif page == "📈 Inventory":
             
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
-            with col1: rm_product = st.selectbox("Select RM Product", df_rm_inv['product_name'].tolist())
-            with col2: new_opening = st.number_input("New Opening Stock", min_value=0.0, step=1.0)
+            with col1: rm_product = st.selectbox("Select RM Product", df_rm_inv['product_name'].tolist(), key="rm_product_select")
+            with col2: new_opening = st.number_input("New Opening Stock", min_value=0.0, step=1.0, key="rm_opening_stock")
             
-            if st.button("Update Opening Stock", type="primary"):
+            if st.button("Update Opening Stock", type="primary", key="update_rm_opening"):
                 if rm_product:
                     execute_query("UPDATE rm_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, rm_product))
                     # Recalculate closing stock
@@ -1223,7 +1243,7 @@ elif page == "📈 Inventory":
         df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
         
         if not df_products.empty:
-            selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist())
+            selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
             
             df_movement = fetch_data("""
                 SELECT transaction_date, challan_no, transaction_type, qty, opening_balance, closing_balance
@@ -1268,10 +1288,10 @@ elif page == "📈 Inventory":
             
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
-            with col1: fg_product = st.selectbox("Select FG Product", df_fg_inv['product_name'].tolist())
-            with col2: new_opening = st.number_input("New Opening Stock", min_value=0.0, step=1.0)
+            with col1: fg_product = st.selectbox("Select FG Product", df_fg_inv['product_name'].tolist(), key="fg_product_select")
+            with col2: new_opening = st.number_input("New Opening Stock", min_value=0.0, step=1.0, key="fg_opening_stock")
             
-            if st.button("Update Opening Stock", type="primary"):
+            if st.button("Update Opening Stock", type="primary", key="update_fg_opening"):
                 if fg_product:
                     execute_query("UPDATE fg_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, fg_product))
                     execute_query("UPDATE fg_inventory SET closing_stock = opening_stock + produced_qty - sold_qty - rejected_qty WHERE product_name = ?", (fg_product,))
