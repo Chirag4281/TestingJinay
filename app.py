@@ -64,6 +64,7 @@ def init_db():
         party_name TEXT,
         product_name TEXT NOT NULL,
         category TEXT,
+        product_category TEXT,
         qty REAL NOT NULL,
         unit TEXT,
         rate REAL DEFAULT 0,
@@ -78,6 +79,7 @@ def init_db():
         party_name TEXT NOT NULL,
         product_name TEXT NOT NULL,
         category TEXT,
+        product_category TEXT,
         qty REAL NOT NULL,
         unit TEXT,
         rate REAL DEFAULT 0,
@@ -88,9 +90,10 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         challan_no TEXT,
         date TEXT NOT NULL,
-        contractor_name TEXT,
+        party_name TEXT,
         fg_product TEXT NOT NULL,
-        qty_produced REAL NOT NULL,
+        product_category TEXT,
+        produced_qty REAL NOT NULL,
         unit TEXT,
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
@@ -169,6 +172,29 @@ def migrate_database(cursor):
         if 'consumed_qty' in columns and 'total_consumed_qty' not in columns:
             cursor.execute("ALTER TABLE rm_inventory RENAME COLUMN consumed_qty TO total_consumed_qty")
             print("✅ Migrated: consumed_qty -> total_consumed_qty")
+            
+        # Add product_category column if not exists
+        cursor.execute("PRAGMA table_info(purchase_transactions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'product_category' not in columns:
+            cursor.execute("ALTER TABLE purchase_transactions ADD COLUMN product_category TEXT")
+            print("✅ Added product_category to purchase_transactions")
+        
+        cursor.execute("PRAGMA table_info(sales_transactions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'product_category' not in columns:
+            cursor.execute("ALTER TABLE sales_transactions ADD COLUMN product_category TEXT")
+            print("✅ Added product_category to sales_transactions")
+        
+        cursor.execute("PRAGMA table_info(production_register)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'product_category' not in columns:
+            cursor.execute("ALTER TABLE production_register ADD COLUMN product_category TEXT")
+            print("✅ Added product_category to production_register")
+        
+        if 'party_name' not in columns:
+            cursor.execute("ALTER TABLE production_register ADD COLUMN party_name TEXT")
+            print("✅ Added party_name to production_register")
             
     except Exception as e:
         print(f"Migration warning: {e}")
@@ -866,28 +892,39 @@ elif page == "📦 Masters":
 elif page == "🛒 Purchase Entry":
     st.subheader("🛒 Purchase Entry")
     
-    df_parties = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') ORDER BY party_name")
-    df_products = fetch_data("SELECT product_name, rate, unit FROM product_master WHERE category IN ('RM Product', 'Powder') ORDER BY product_name")
+    # Get all party types for purchase
+    df_parties = fetch_data("""
+        SELECT party_name FROM party_master 
+        WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') 
+        ORDER BY party_name
+    """)
+    df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
     
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
     product_rates = dict(zip(df_products['product_name'], df_products['rate'])) if not df_products.empty else {}
     product_units = dict(zip(df_products['product_name'], df_products['unit'])) if not df_products.empty else {}
+    product_categories = dict(zip(df_products['product_name'], df_products['category'])) if not df_products.empty else {}
+    
+    # Unit options
+    unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
     
     with st.form("purchase_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
             challan_no = st.text_input("Challan No *")
             purchase_date = st.date_input("Date", datetime.now())
-            party = st.selectbox("Party/Moulder/Contractor", party_list)
+            party = st.selectbox("Party/Moulder/Contractor", party_list if party_list else ["No parties added yet"])
         
         with col2:
-            product = st.selectbox("Product", product_list)
+            product = st.selectbox("Product", product_list if product_list else ["No products added yet"])
             category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"])
+            product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"], 
+                                           index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(product_categories.get(product, "RM Product")) if product_categories.get(product, "RM Product") in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 2)
             qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
         
         with col3:
-            unit = st.text_input("Unit", value=product_units.get(product, 'PCS'))
+            unit = st.selectbox("Unit", unit_options, index=unit_options.index(product_units.get(product, 'PCS')) if product_units.get(product, 'PCS') in unit_options else 4)
             rate = st.number_input("Rate per Unit", min_value=0.0, value=product_rates.get(product, 0.0), step=0.01)
             if qty and rate:
                 amount = qty * rate
@@ -896,13 +933,13 @@ elif page == "🛒 Purchase Entry":
         submitted = st.form_submit_button("Save Purchase", type="primary")
         
         if submitted:
-            if all([challan_no, party, product, qty > 0]):
+            if all([challan_no, party and party != "No parties added yet", product and product != "No products added yet", qty > 0]):
                 try:
                     # Insert purchase transaction
                     purchase_id = execute_query('''INSERT INTO purchase_transactions 
-                        (challan_no, date, party_name, product_name, category, qty, unit, rate, amount, entry_type)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
-                        (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, qty, unit, rate, qty*rate))
+                        (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, entry_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
+                        (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, product_category, qty, unit, rate, qty*rate))
                     
                     execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (product,))
                     
@@ -917,7 +954,7 @@ elif page == "🛒 Purchase Entry":
                 st.warning("Please fill all required fields")
     
     st.markdown("### Recent Purchases")
-    df_purchases = fetch_data("SELECT challan_no, date, party_name, product_name, category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC LIMIT 50")
+    df_purchases = fetch_data("SELECT challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC LIMIT 50")
     if not df_purchases.empty:
         st.dataframe(df_purchases, use_container_width=True)
         st.metric("Total Purchase Value", f"₹{df_purchases['amount'].sum():,.2f}")
@@ -926,24 +963,35 @@ elif page == "🛒 Purchase Entry":
 elif page == "🏭 Production Entry":
     st.subheader("🏭 Production Entry")
     
-    df_cont = fetch_data("SELECT contractor_name FROM contractor_master ORDER BY contractor_name")
-    df_products = fetch_data("SELECT product_name, unit FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'Powder') ORDER BY product_name")
+    # Get all party types (Party, Moulder, Contractor)
+    df_parties = fetch_data("""
+        SELECT party_name FROM party_master 
+        WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') 
+        ORDER BY party_name
+    """)
+    df_products = fetch_data("SELECT product_name, unit, category FROM product_master ORDER BY product_name")
     
-    contractor_list = df_cont['contractor_name'].tolist() if not df_cont.empty else []
+    party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
     product_units = dict(zip(df_products['product_name'], df_products['unit'])) if not df_products.empty else {}
+    product_categories = dict(zip(df_products['product_name'], df_products['category'])) if not df_products.empty else {}
+    
+    # Unit options
+    unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
     
     with st.form("production_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
             challan_no = st.text_input("Challan No")
             prod_date = st.date_input("Date", datetime.now())
-            contractor = st.selectbox("Contractor", contractor_list)
+            party_name = st.selectbox("Party/Moulder/Contractor", party_list if party_list else ["No parties added yet"])
         
         with col2:
-            fg_product = st.selectbox("Product", product_list)
-            qty_produced = st.number_input("Quantity Produced *", min_value=0.0, step=1.0)
-            unit = st.text_input("Unit", value=product_units.get(fg_product, 'PCS'))
+            fg_product = st.selectbox("Product", product_list if product_list else ["No products added yet"])
+            product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"], 
+                                           index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(product_categories.get(fg_product, "FG Product")) if product_categories.get(fg_product, "FG Product") in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0)
+            produced_qty = st.number_input("Produced Qty *", min_value=0.0, step=1.0)
+            unit = st.selectbox("Unit", unit_options, index=unit_options.index(product_units.get(fg_product, 'PCS')) if product_units.get(fg_product, 'PCS') in unit_options else 4)
         
         with col3:
             description = st.text_area("Description")
@@ -951,14 +999,14 @@ elif page == "🏭 Production Entry":
         submitted = st.form_submit_button("Save Production", type="primary")
         
         if submitted:
-            if all([contractor, fg_product, qty_produced > 0]):
+            if all([party_name and party_name != "No parties added yet", fg_product and fg_product != "No products added yet", produced_qty > 0]):
                 try:
                     execute_query('''INSERT INTO production_register 
-                        (challan_no, date, contractor_name, fg_product, qty_produced, unit, description)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                        (challan_no, prod_date.strftime('%Y-%m-%d'), contractor, fg_product, qty_produced, unit, description))
+                        (challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, product_category, produced_qty, unit, description))
                     execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (fg_product,))
-                    update_fg_inventory(fg_product, qty_produced, 'PRODUCE')
+                    update_fg_inventory(fg_product, produced_qty, 'PRODUCE')
                     
                     st.success("✅ Production entry saved successfully!")
                     st.rerun()
@@ -968,7 +1016,7 @@ elif page == "🏭 Production Entry":
                 st.warning("Please fill all required fields")
     
     st.markdown("### Recent Production")
-    df_prod = fetch_data("SELECT challan_no, date, contractor_name, fg_product, qty_produced, unit, description FROM production_register ORDER BY date DESC LIMIT 50")
+    df_prod = fetch_data("SELECT challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description FROM production_register ORDER BY date DESC LIMIT 50")
     if not df_prod.empty:
         st.dataframe(df_prod, use_container_width=True)
 
@@ -976,28 +1024,39 @@ elif page == "🏭 Production Entry":
 elif page == "💰 Sales Entry":
     st.subheader("💰 Sales Entry")
     
-    df_parties = fetch_data("SELECT party_name FROM party_master WHERE category='Sales Party' ORDER BY party_name")
-    df_products = fetch_data("SELECT product_name, rate, unit FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'RM Product', 'Powder') ORDER BY product_name")
+    # Get all party types for sales
+    df_parties = fetch_data("""
+        SELECT party_name FROM party_master 
+        WHERE category IN ('Sales Party', 'Moulder', 'Contractor', 'Powder', 'Purchase Party') 
+        ORDER BY party_name
+    """)
+    df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
     
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
     product_rates = dict(zip(df_products['product_name'], df_products['rate'])) if not df_products.empty else {}
     product_units = dict(zip(df_products['product_name'], df_products['unit'])) if not df_products.empty else {}
+    product_categories = dict(zip(df_products['product_name'], df_products['category'])) if not df_products.empty else {}
+    
+    # Unit options
+    unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
     
     with st.form("sales_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
             challan_no = st.text_input("Challan No *")
             sales_date = st.date_input("Date", datetime.now())
-            party = st.selectbox("Sales Party", party_list)
+            party = st.selectbox("Sales Party", party_list if party_list else ["No parties added yet"])
         
         with col2:
-            product = st.selectbox("Product", product_list)
-            category = st.selectbox("Category", ["FG Product", "Moulding Product", "RM Product", "Powder"])
+            product = st.selectbox("Product", product_list if product_list else ["No products added yet"])
+            category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"])
+            product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"], 
+                                           index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(product_categories.get(product, "FG Product")) if product_categories.get(product, "FG Product") in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0)
             qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
         
         with col3:
-            unit = st.text_input("Unit", value=product_units.get(product, 'PCS'))
+            unit = st.selectbox("Unit", unit_options, index=unit_options.index(product_units.get(product, 'PCS')) if product_units.get(product, 'PCS') in unit_options else 4)
             rate = st.number_input("Rate per Unit", min_value=0.0, value=product_rates.get(product, 0.0), step=0.01)
             if qty and rate:
                 amount = qty * rate
@@ -1006,7 +1065,7 @@ elif page == "💰 Sales Entry":
         submitted = st.form_submit_button("Save Sale", type="primary")
         
         if submitted:
-            if all([challan_no, party, product, qty > 0]):
+            if all([challan_no, party and party != "No parties added yet", product and product != "No products added yet", qty > 0]):
                 df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
                 available = df_stock['closing_stock'].iloc[0] if not df_stock.empty else 0
                 
@@ -1015,9 +1074,9 @@ elif page == "💰 Sales Entry":
                 else:
                     try:
                         execute_query('''INSERT INTO sales_transactions 
-                            (challan_no, date, party_name, product_name, category, qty, unit, rate, amount)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                            (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, qty, unit, rate, qty*rate))
+                            (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, product_category, qty, unit, rate, qty*rate))
                         execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (product,))
                         update_fg_inventory(product, qty, 'SALE')
                         
@@ -1029,7 +1088,7 @@ elif page == "💰 Sales Entry":
                 st.warning("Please fill all required fields")
     
     st.markdown("### Recent Sales")
-    df_sales = fetch_data("SELECT challan_no, date, party_name, product_name, category, qty, unit, rate, amount FROM sales_transactions ORDER BY date DESC LIMIT 50")
+    df_sales = fetch_data("SELECT challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM sales_transactions ORDER BY date DESC LIMIT 50")
     if not df_sales.empty:
         st.dataframe(df_sales, use_container_width=True)
         st.metric("Total Sales Value", f"₹{df_sales['amount'].sum():,.2f}")
@@ -1232,7 +1291,7 @@ elif page == "📋 Reports":
     if report_type == "Production Summary":
         st.markdown("### Production Summary Report")
         df = fetch_data("""
-            SELECT fg_product, COUNT(*) as production_days, SUM(qty_produced) as total_produced, AVG(qty_produced) as avg_daily
+            SELECT fg_product, COUNT(*) as production_days, SUM(produced_qty) as total_produced, AVG(produced_qty) as avg_daily
             FROM production_register GROUP BY fg_product ORDER BY total_produced DESC
         """)
         if not df.empty:
@@ -1256,12 +1315,12 @@ elif page == "📋 Reports":
     elif report_type == "Contractor Performance":
         st.markdown("### Contractor Performance Report")
         df = fetch_data("""
-            SELECT contractor_name, COUNT(DISTINCT DATE(date)) as working_days, SUM(qty_produced) as total_produced
-            FROM production_register GROUP BY contractor_name ORDER BY total_produced DESC
+            SELECT party_name, COUNT(DISTINCT DATE(date)) as working_days, SUM(produced_qty) as total_produced
+            FROM production_register GROUP BY party_name ORDER BY total_produced DESC
         """)
         if not df.empty:
             st.dataframe(df, use_container_width=True)
-            st.bar_chart(df.set_index('contractor_name')['total_produced'])
+            st.bar_chart(df.set_index('party_name')['total_produced'])
         else:
             st.info("No production data available")
     
