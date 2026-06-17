@@ -147,7 +147,31 @@ def init_db():
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     conn.commit()
+    
+    # Run migration to handle schema changes
+    migrate_database(cursor)
+    
+    conn.commit()
     conn.close()
+
+def migrate_database(cursor):
+    """Migrate database schema to handle column name changes"""
+    try:
+        # Check if old columns exist in rm_inventory
+        cursor.execute("PRAGMA table_info(rm_inventory)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        # If old column names exist, rename them
+        if 'purchased_qty' in columns and 'total_purchased_qty' not in columns:
+            cursor.execute("ALTER TABLE rm_inventory RENAME COLUMN purchased_qty TO total_purchased_qty")
+            print("✅ Migrated: purchased_qty -> total_purchased_qty")
+        
+        if 'consumed_qty' in columns and 'total_consumed_qty' not in columns:
+            cursor.execute("ALTER TABLE rm_inventory RENAME COLUMN consumed_qty TO total_consumed_qty")
+            print("✅ Migrated: consumed_qty -> total_consumed_qty")
+            
+    except Exception as e:
+        print(f"Migration warning: {e}")
 
 def get_db_connection():
     return sqlite3.connect(DB_NAME)
