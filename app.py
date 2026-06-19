@@ -307,19 +307,42 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     return closing_balance
 
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
-    if transaction_type == 'PRODUCE':
-        execute_query("UPDATE fg_inventory SET produced_qty = produced_qty + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'SALE':
-        execute_query("UPDATE fg_inventory SET sold_qty = sold_qty + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'REJECT':
-        execute_query("UPDATE fg_inventory SET rejected_qty = rejected_qty + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'PURCHASE':
-        # Handle cases where FG is bought directly
-        execute_query("UPDATE fg_inventory SET purchased_qty = purchased_qty + ? WHERE product_name = ?", (qty, product))
+    """
+    Updates FG Inventory and immediately recalculates Closing Stock.
+    Handles cases where the product row might not exist yet.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Ensure the product exists in fg_inventory
+        cursor.execute("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (product,))
         
-    # Recalculate closing stock: Opening + Produced + Purchased - Sold - Rejected
-    execute_query("""UPDATE fg_inventory SET closing_stock = opening_stock + produced_qty + purchased_qty - sold_qty - rejected_qty 
-                     WHERE product_name = ?""", (product,))
+        # 2. Update the specific counter based on transaction type
+        if transaction_type == 'PRODUCE':
+            cursor.execute("UPDATE fg_inventory SET produced_qty = produced_qty + ? WHERE product_name = ?", (qty, product))
+        elif transaction_type == 'SALE':
+            cursor.execute("UPDATE fg_inventory SET sold_qty = sold_qty + ? WHERE product_name = ?", (qty, product))
+        elif transaction_type == 'REJECT':
+            cursor.execute("UPDATE fg_inventory SET rejected_qty = rejected_qty + ? WHERE product_name = ?", (qty, product))
+        elif transaction_type == 'PURCHASE':
+            # Handle cases where FG is bought directly
+            cursor.execute("UPDATE fg_inventory SET purchased_qty = purchased_qty + ? WHERE product_name = ?", (qty, product))
+            
+        # 3. RECALCULATE CLOSING STOCK IMMEDIATELY
+        # Formula: Opening + Produced + Purchased - Sold - Rejected
+        cursor.execute("""
+            UPDATE fg_inventory 
+            SET closing_stock = opening_stock + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0)
+            WHERE product_name = ?
+        """, (product,))
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Error updating FG Inventory: {e}")
+    finally:
+        conn.close()
 
 # ======================= EXCEL IMPORT FUNCTIONS =======================
 def import_rm_sheet(df):
@@ -1470,19 +1493,26 @@ elif page == "💰 Sales Entry":
         
         if submitted:
             if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
-                # Check Stock in FG Inventory (Unified for all sold items)
+                # Check Stock in FG Inventory (Unified for all sold items: Produced OR Purchased)
                 df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
-                available = df_stock['closing_stock'].iloc[0] if not df_stock.empty else 0
+                
+                # If no record exists, stock is 0
+                available = 0.0
+                if not df_stock.empty:
+                    val = df_stock['closing_stock'].iloc[0]
+                    available = val if pd.notna(val) else 0.0
                 
                 if available < qty:
-                    st.warning(f"⚠️ Insufficient stock! Available: {available:.0f}, Requested: {qty:.0f}")
+                    st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
                 else:
                     try:
                         execute_query('''INSERT INTO sales_transactions 
                             (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                             (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, qty*rate))
-                        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (product,))
+                        
+                        # Ensure inventory row exists and update it
+                        # The updated update_fg_inventory function handles insertion and recalculation
                         update_fg_inventory(product, qty, 'SALE')
                         
                         st.success("✅ Sale entry saved successfully!")
@@ -1521,8 +1551,14 @@ elif page == "💰 Sales Entry":
                         qty = record['qty'].iloc[0]
                         
                         # Reverse the inventory update
+                        # We manually adjust here to avoid double counting if we called update_fg_inventory again
                         execute_query("UPDATE fg_inventory SET sold_qty = sold_qty - ? WHERE product_name = ?", (qty, product))
-                        execute_query("UPDATE fg_inventory SET closing_stock = closing_stock + ? WHERE product_name = ?", (qty, product))
+                        # Recalculate closing stock immediately
+                        execute_query("""
+                            UPDATE fg_inventory 
+                            SET closing_stock = opening_stock + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0)
+                            WHERE product_name = ?
+                        """, (product,))
                         
                         # Delete the transaction
                         execute_query("DELETE FROM sales_transactions WHERE id = ?", (selected_id,))
@@ -1598,15 +1634,31 @@ elif page == "💰 Sales Entry":
                                  # Same product - just adjust the difference
                                  if qty_diff != 0:
                                      execute_query("UPDATE fg_inventory SET sold_qty = sold_qty + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                     execute_query("UPDATE fg_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (qty_diff, edit_product))
+                                     # Recalculate closing stock
+                                     execute_query("""
+                                        UPDATE fg_inventory 
+                                        SET closing_stock = opening_stock + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0)
+                                        WHERE product_name = ?
+                                    """, (edit_product,))
                              else:
                                  # Different product - reverse old, add new
-                                 execute_query("UPDATE fg_inventory SET sold_qty = sold_qty - ? WHERE product_name = ?", (old_qty, old_product))
-                                 execute_query("UPDATE fg_inventory SET closing_stock = closing_stock + ? WHERE product_name = ?", (old_qty, old_product))
                                  
+                                 # Reverse Old
+                                 execute_query("UPDATE fg_inventory SET sold_qty = sold_qty - ? WHERE product_name = ?", (old_qty, old_product))
+                                 execute_query("""
+                                    UPDATE fg_inventory 
+                                    SET closing_stock = opening_stock + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0)
+                                    WHERE product_name = ?
+                                """, (old_product,))
+                                 
+                                 # Add New
                                  execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (edit_product,))
                                  execute_query("UPDATE fg_inventory SET sold_qty = sold_qty + ? WHERE product_name = ?", (edit_qty, edit_product))
-                                 execute_query("UPDATE fg_inventory SET closing_stock = closing_stock - ? WHERE product_name = ?", (edit_qty, edit_product))
+                                 execute_query("""
+                                    UPDATE fg_inventory 
+                                    SET closing_stock = opening_stock + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0)
+                                    WHERE product_name = ?
+                                """, (edit_product,))
                              
                              st.success("✅ Sales entry updated successfully!")
                              st.session_state.edit_mode = False
@@ -1622,7 +1674,7 @@ elif page == "💰 Sales Entry":
         st.dataframe(df_all_sales, use_container_width=True)
         st.metric("Total Sales Value", f"₹{df_all_sales['amount'].sum():,.2f}")
     else:
-        st.info("No sales entries found")# ======================= REJECTIONS =======================
+        st.info("No sales entries found")
 elif page == "⚠️ Rejections":
     st.subheader("⚠️ Rejection Management")
     
