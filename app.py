@@ -1161,25 +1161,58 @@ elif page == "🛒 Purchase Entry":
     else:
         st.info("No purchase entries found")
 # ======================= PRODUCTION ENTRY =======================
+# ======================= PRODUCTION ENTRY =======================
 elif page == "🏭 Production Entry":
     st.subheader("🏭 Production Entry")
     
-    # Get all party types (Party, Moulder, Contractor)
-    df_parties = fetch_data("""
-        SELECT party_name FROM party_master 
-        WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') 
-        ORDER BY party_name
-    """)
-    df_products = fetch_data("SELECT product_name, unit, category FROM product_master ORDER BY product_name")
-    
-    party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
-    product_list = df_products['product_name'].tolist() if not df_products.empty else []
-    product_units = dict(zip(df_products['product_name'], df_products['unit'])) if not df_products.empty else {}
-    product_categories = dict(zip(df_products['product_name'], df_products['category'])) if not df_products.empty else {}
-    
+    # Initialize session state for filters if not present
+    if 'prod_party_filter' not in st.session_state:
+        st.session_state.prod_party_filter = "Moulder" # Default to Moulder for production
+    if 'prod_prod_filter' not in st.session_state:
+        st.session_state.prod_prod_filter = "FG Product"
+
     # Unit options
     unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
     
+    # --- DYNAMIC FILTERS (OUTSIDE FORM) ---
+    st.markdown("### 🔍 Filters")
+    col_f1, col_f2 = st.columns(2)
+    
+    with col_f1:
+        party_filter = st.selectbox(
+            "Select Party Type", 
+            ["Moulder", "Contractor", "Purchase Party"], 
+            key="prod_party_filter_select",
+            index=["Moulder", "Contractor", "Purchase Party"].index(st.session_state.prod_party_filter) if st.session_state.prod_party_filter in ["Moulder", "Contractor", "Purchase Party"] else 0
+        )
+        # Update session state immediately
+        if party_filter != st.session_state.prod_party_filter:
+            st.session_state.prod_party_filter = party_filter
+            st.rerun()
+            
+    with col_f2:
+        prod_cat_filter = st.selectbox(
+            "Filter Product By Category", 
+            ["FG Product", "Moulding Product", "RM Product", "Powder"], 
+            key="prod_prod_filter_select",
+            index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(st.session_state.prod_prod_filter) if st.session_state.prod_prod_filter in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0
+        )
+        # Update session state immediately
+        if prod_cat_filter != st.session_state.prod_prod_filter:
+            st.session_state.prod_prod_filter = prod_cat_filter
+            st.rerun()
+
+    st.markdown("---")
+
+    # Fetch data based on current filters
+    df_parties, _ = get_dynamic_lists(st.session_state.prod_party_filter)
+    party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
+    
+    _, df_products = get_dynamic_lists(st.session_state.prod_prod_filter)
+    product_list = df_products['product_name'].tolist() if not df_products.empty else []
+    product_details_map = dict(zip(df_products['product_name'], zip(df_products['rate'], df_products['unit'], df_products['category']))) if not df_products.empty else {}
+
+    # --- ENTRY FORM ---
     with st.form("production_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1188,11 +1221,19 @@ elif page == "🏭 Production Entry":
             party_name = st.selectbox("Party/Moulder/Contractor", party_list if party_list else ["No parties added yet"])
         
         with col2:
-            fg_product = st.selectbox("Product", product_list if product_list else ["No products added yet"])
-            product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"], 
-                                           index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(product_categories.get(fg_product, "FG Product")) if product_categories.get(fg_product, "FG Product") in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0)
+            fg_product = st.selectbox("Product", product_list if product_list else ["No products found"])
+            
+            # Auto-fill details based on selection
+            unit_val = 'PCS'
+            actual_prod_cat = st.session_state.prod_prod_filter
+            
+            if fg_product in product_details_map:
+                r, u, c = product_details_map[fg_product]
+                unit_val = u
+                actual_prod_cat = c
+
             produced_qty = st.number_input("Produced Qty *", min_value=0.0, step=1.0)
-            unit = st.selectbox("Unit", unit_options, index=unit_options.index(product_units.get(fg_product, 'PCS')) if product_units.get(fg_product, 'PCS') in unit_options else 4)
+            unit = st.selectbox("Unit", unit_options, index=unit_options.index(unit_val) if unit_val in unit_options else 4)
         
         with col3:
             description = st.text_area("Description")
@@ -1200,12 +1241,12 @@ elif page == "🏭 Production Entry":
         submitted = st.form_submit_button("Save Production", type="primary")
         
         if submitted:
-            if all([party_name and party_name != "No parties added yet", fg_product and fg_product != "No products added yet", produced_qty > 0]):
+            if all([party_name and party_name != "No parties added yet", fg_product and fg_product != "No products found", produced_qty > 0]):
                 try:
                     execute_query('''INSERT INTO production_register 
                         (challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, product_category, produced_qty, unit, description))
+                        (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, actual_prod_cat, produced_qty, unit, description))
                     execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (fg_product,))
                     update_fg_inventory(fg_product, produced_qty, 'PRODUCE')
                     
@@ -1265,18 +1306,15 @@ elif page == "🏭 Production Entry":
             if not production_data.empty:
                 row = production_data.iloc[0]
                 
-                # Get current parties and products
-                df_parties_edit = fetch_data("""
-                    SELECT party_name FROM party_master 
-                    WHERE category IN ('Purchase Party', 'Moulder', 'Contractor', 'Powder') 
-                    ORDER BY party_name
-                """)
-                df_products_edit = fetch_data("SELECT product_name, unit, category FROM product_master ORDER BY product_name")
+                # Re-fetch lists for edit form to ensure consistency
+                df_parties_edit, _ = get_dynamic_lists(row['party_name'] if row['party_name'] in ["Moulder", "Contractor", "Purchase Party"] else "All") # Simplified for edit
+                # Better approach: Fetch all relevant parties for edit dropdown
+                df_parties_edit_all = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Moulder', 'Contractor', 'Purchase Party') ORDER BY party_name")
+                party_list_edit = df_parties_edit_all['party_name'].tolist() if not df_parties_edit_all.empty else []
                 
-                party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
+                df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
                 product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
                 product_units_edit = dict(zip(df_products_edit['product_name'], df_products_edit['unit'])) if not df_products_edit.empty else {}
-                product_categories_edit = dict(zip(df_products_edit['product_name'], df_products_edit['category'])) if not df_products_edit.empty else {}
                 
                 with st.form("edit_production_form"):
                     col1, col2, col3 = st.columns(3)
@@ -1347,7 +1385,6 @@ elif page == "🏭 Production Entry":
         st.dataframe(df_all_production, use_container_width=True)
     else:
         st.info("No production entries found")
-
 # ======================= SALES ENTRY =======================
 elif page == "💰 Sales Entry":
     st.subheader("💰 Sales Entry")
