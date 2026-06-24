@@ -116,6 +116,7 @@ def init_db():
         total_purchased_qty REAL DEFAULT 0,
         total_consumed_qty REAL DEFAULT 0,
         closing_stock REAL DEFAULT 0,
+        rate REAL DEFAULT 0,
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     # RM Stock Movement - Track each transaction separately with running balance
@@ -173,8 +174,12 @@ def migrate_database(cursor):
     """Migrate database schema to handle column name changes"""
     try:
         # Check if old columns exist in rm_inventory
+                # ======================= MIGRATE RM INVENTORY =======================
         cursor.execute("PRAGMA table_info(rm_inventory)")
         columns = [row[1] for row in cursor.fetchall()]
+        if 'rate' not in columns:
+            cursor.execute("ALTER TABLE rm_inventory ADD COLUMN rate REAL DEFAULT 0")
+            print("✅ Added rate to rm_inventory")
         
         # If old column names exist, rename them
         if 'purchased_qty' in columns and 'total_purchased_qty' not in columns:
@@ -1837,15 +1842,12 @@ elif page == "📈 Inventory":
     
     tab1, tab2, tab3 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory"])
     
-    with tab1:
+        with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
-        # Join with product_master to get the rate if it's missing in inventory
         df_rm_inv = fetch_data("""
-            SELECT i.product_name, i.opening_stock, i.total_purchased_qty, i.total_consumed_qty, i.closing_stock, 
-                   COALESCE(i.rate, m.rate, 0) as rate, m.unit
-            FROM rm_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name 
-            WHERE m.category='RM Product' OR m.category IS NULL
-            ORDER BY i.product_name
+            SELECT product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock, COALESCE(rate, 0) as rate
+            FROM rm_inventory 
+            ORDER BY product_name
         """)
         
         if not df_rm_inv.empty:
