@@ -279,7 +279,7 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     
     return result['balance'].iloc[0] if not result.empty else 0
 
-def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None):
+def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
     """Update RM inventory with proper running balance tracking"""
     
     # Calculate opening balance before this transaction
@@ -305,6 +305,10 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     
     # Update closing stock in main inventory
     execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_balance, product))
+    
+    # UPDATE RATE IN INVENTORY TO MATCH LATEST TRANSACTION
+    if rate > 0:
+        execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
     
     return closing_balance
 
@@ -983,8 +987,8 @@ elif page == "🛒 Purchase Entry":
                     if actual_prod_cat == 'RM Product':
                         # Initialize with zeros if not exists
                         execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
-                        # Update RM Inventory
-                        update_rm_inventory(product, qty, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id)
+                        # Update RM Inventory (Pass rate to sync it)
+                        update_rm_inventory(product, qty, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id, rate)
                     else:
                         # If buying FG/Moulding/Powder, it goes to FG Inventory as "Purchased" stock
                         # Initialize with zeros if not exists
@@ -1186,7 +1190,7 @@ elif page == "🛒 Purchase Entry":
                                  # Add New
                                  if edit_product_category == 'RM Product':
                                      execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
-                                     update_rm_inventory(edit_product, edit_qty, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id)
+                                     update_rm_inventory(edit_product, edit_qty, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, edit_rate)
                                  else:
                                      execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                      update_fg_inventory(edit_product, edit_qty, 'PURCHASE')
@@ -1562,7 +1566,8 @@ elif page == "💰 Sales Entry":
                         # --- SMART INVENTORY UPDATE ---
                         if actual_prod_cat == 'RM Product':
                             # Treat sale of RM as Consumption
-                            update_rm_inventory(product, qty, 'CONSUMPTION', sales_date.strftime('%Y-%m-%d'), challan_no)
+                            # Pass rate to sync it
+                            update_rm_inventory(product, qty, 'CONSUMPTION', sales_date.strftime('%Y-%m-%d'), challan_no, rate=rate)
                         else:
                             # Treat sale of FG as normal Sale
                             update_fg_inventory(product, qty, 'SALE')
@@ -1724,7 +1729,7 @@ elif page == "💰 Sales Entry":
                                  if edit_product_category == 'RM Product':
                                      execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
                                      # Treat as consumption
-                                     update_rm_inventory(edit_product, edit_qty, 'CONSUMPTION', edit_date.strftime('%Y-%m-%d'), edit_challan)
+                                     update_rm_inventory(edit_product, edit_qty, 'CONSUMPTION', edit_date.strftime('%Y-%m-%d'), edit_challan, rate=edit_rate)
                                  else:
                                      execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                      update_fg_inventory(edit_product, edit_qty, 'SALE')
@@ -1834,17 +1839,23 @@ elif page == "📈 Inventory":
     
     with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
+        # Join with product_master to get the rate if it's missing in inventory
         df_rm_inv = fetch_data("""
-            SELECT i.product_name, i.opening_stock, i.total_purchased_qty, i.total_consumed_qty, i.closing_stock, m.rate, m.unit
+            SELECT i.product_name, i.opening_stock, i.total_purchased_qty, i.total_consumed_qty, i.closing_stock, 
+                   COALESCE(i.rate, m.rate, 0) as rate, m.unit
             FROM rm_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name 
             WHERE m.category='RM Product' OR m.category IS NULL
             ORDER BY i.product_name
         """)
         
         if not df_rm_inv.empty:
+            # Ensure rate is numeric and fill NaN with 0
+            df_rm_inv['rate'] = pd.to_numeric(df_rm_inv['rate'], errors='coerce').fillna(0)
+            df_rm_inv['closing_stock'] = pd.to_numeric(df_rm_inv['closing_stock'], errors='coerce').fillna(0)
+            
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total RM Products", len(df_rm_inv))
-            with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate'].fillna(0)).sum():,.2f}")
+            with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
             with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
             
             st.dataframe(df_rm_inv, use_container_width=True)
