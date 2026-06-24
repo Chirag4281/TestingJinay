@@ -285,8 +285,24 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     return result['balance'].iloc[0] if not result.empty else 0
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
-    """Update RM inventory with proper running balance tracking"""
+    # ... (previous code for movement recording) ...
     
+    # CRITICAL FIX: Calculate closing_stock from aggregates
+    result = fetch_data("""
+        SELECT COALESCE(opening_stock, 0) as opening_stock,
+               COALESCE(total_purchased_qty, 0) as total_purchased,
+               COALESCE(total_consumed_qty, 0) as total_consumed
+        FROM rm_inventory WHERE product_name = ?
+    """, (product,))
+    
+    if not result.empty:
+        opening = result['opening_stock'].iloc[0]
+        purchased = result['total_purchased'].iloc[0]
+        consumed = result['total_consumed'].iloc[0]
+        closing_stock = opening + purchased - consumed
+        
+        # Update the database with the mathematically correct value
+        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))    
     # Calculate opening balance before this transaction (for movement record)
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
     
@@ -1856,6 +1872,8 @@ elif page == "📈 Inventory":
     
     with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
+        
+        # Fetch raw data
         df_rm_inv = fetch_data("""
             SELECT product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock, COALESCE(rate, 0) as rate
             FROM rm_inventory 
@@ -1863,16 +1881,32 @@ elif page == "📈 Inventory":
         """)
         
         if not df_rm_inv.empty:
-            # Ensure rate is numeric and fill NaN with 0
+            # FIX: Recalculate closing_stock in Python to ensure accuracy regardless of DB state
+            df_rm_inv['opening_stock'] = pd.to_numeric(df_rm_inv['opening_stock'], errors='coerce').fillna(0)
+            df_rm_inv['total_purchased_qty'] = pd.to_numeric(df_rm_inv['total_purchased_qty'], errors='coerce').fillna(0)
+            df_rm_inv['total_consumed_qty'] = pd.to_numeric(df_rm_inv['total_consumed_qty'], errors='coerce').fillna(0)
             df_rm_inv['rate'] = pd.to_numeric(df_rm_inv['rate'], errors='coerce').fillna(0)
-            df_rm_inv['closing_stock'] = pd.to_numeric(df_rm_inv['closing_stock'], errors='coerce').fillna(0)
             
+            # Correct the closing stock calculation
+            df_rm_inv['corrected_closing_stock'] = df_rm_inv['opening_stock'] + df_rm_inv['total_purchased_qty'] - df_rm_inv['total_consumed_qty']
+            
+            # Optional: Update the database with the corrected values silently
+            for index, row in df_rm_inv.iterrows():
+                if abs(row['closing_stock'] - row['corrected_closing_stock']) > 0.01:
+                    execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", 
+                                  (row['corrected_closing_stock'], row['product_name']))
+
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total RM Products", len(df_rm_inv))
-            with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
+            # Use corrected_closing_stock for metrics
+            with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['corrected_closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
             with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
             
-            st.dataframe(df_rm_inv, use_container_width=True)
+            # Display corrected stock in the table
+            display_df = df_rm_inv[['product_name', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'corrected_closing_stock', 'rate']].copy()
+            display_df.rename(columns={'corrected_closing_stock': 'closing_stock'}, inplace=True)
+            
+            st.dataframe(display_df, use_container_width=True)
             
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
@@ -1882,13 +1916,12 @@ elif page == "📈 Inventory":
             if st.button("Update Opening Stock", type="primary", key="update_rm_opening"):
                 if rm_product:
                     execute_query("UPDATE rm_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, rm_product))
-                    # Recalculate closing stock
-                    current_purchased = fetch_data("SELECT total_purchased_qty FROM rm_inventory WHERE product_name = ?", (rm_product,))['total_purchased_qty'].iloc[0]
-                    current_consumed = fetch_data("SELECT total_consumed_qty FROM rm_inventory WHERE product_name = ?", (rm_product,))['total_consumed_qty'].iloc[0]
                     
-                    p = current_purchased if pd.notna(current_purchased) else 0
-                    c = current_consumed if pd.notna(current_consumed) else 0
-                    new_closing = new_opening + p - c
+                    # Recalculate totals based on new opening
+                    current_purchased = fetch_data("SELECT COALESCE(total_purchased_qty, 0) FROM rm_inventory WHERE product_name = ?", (rm_product,)).iloc[0,0]
+                    current_consumed = fetch_data("SELECT COALESCE(total_consumed_qty, 0) FROM rm_inventory WHERE product_name = ?", (rm_product,)).iloc[0,0]
+                    
+                    new_closing = new_opening + current_purchased - current_consumed
                     execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (new_closing, rm_product))
                     st.success("✅ Opening stock updated!")
                     st.rerun()
