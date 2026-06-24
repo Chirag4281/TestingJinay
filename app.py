@@ -287,10 +287,10 @@ def calculate_rm_opening_balance(product_name, before_date=None):
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
     """Update RM inventory with proper running balance tracking"""
     
-    # Calculate opening balance before this transaction
+    # Calculate opening balance before this transaction (for movement record)
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
     
-    # Calculate closing balance
+    # Calculate closing balance for this movement
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         # Update total purchased
@@ -308,15 +308,27 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
         (transaction_date, challan_no, product, transaction_type, qty, opening_balance, closing_balance, reference_id))
     
-    # Update closing stock in main inventory
-    execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_balance, product))
+    # CRITICAL FIX: Calculate closing_stock from aggregates instead of running balance
+    # This ensures accuracy even for same-day transactions
+    result = fetch_data("""
+        SELECT COALESCE(opening_stock, 0) as opening_stock,
+               COALESCE(total_purchased_qty, 0) as total_purchased,
+               COALESCE(total_consumed_qty, 0) as total_consumed
+        FROM rm_inventory WHERE product_name = ?
+    """, (product,))
+    
+    if not result.empty:
+        opening = result['opening_stock'].iloc[0]
+        purchased = result['total_purchased'].iloc[0]
+        consumed = result['total_consumed'].iloc[0]
+        closing_stock = opening + purchased - consumed
+        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))
     
     # UPDATE RATE IN INVENTORY TO MATCH LATEST TRANSACTION
     if rate > 0:
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
     
     return closing_balance
-
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     """
     Updates FG Inventory and immediately recalculates Closing Stock.
@@ -1893,21 +1905,44 @@ elif page == "📈 Inventory":
         if not df_products.empty:
             selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
             
+            # Fetch all movements ordered by date and id
             df_movement = fetch_data("""
-                SELECT transaction_date, challan_no, transaction_type, qty, opening_balance, closing_balance
+                SELECT id, transaction_date, challan_no, transaction_type, qty
                 FROM rm_stock_movement 
                 WHERE product_name = ?
                 ORDER BY transaction_date, id
             """, (selected_product,))
             
             if not df_movement.empty:
-                st.dataframe(df_movement, use_container_width=True)
+                # Get opening stock
+                opening_result = fetch_data("SELECT COALESCE(opening_stock, 0) as opening_stock FROM rm_inventory WHERE product_name = ?", (selected_product,))
+                opening_stock = opening_result['opening_stock'].iloc[0] if not opening_result.empty else 0
+                
+                # Calculate running balance in Python
+                running_balance = opening_stock
+                opening_balances = []
+                closing_balances = []
+                
+                for idx, row in df_movement.iterrows():
+                    opening_balances.append(running_balance)
+                    if row['transaction_type'] == 'PURCHASE':
+                        running_balance += row['qty']
+                    elif row['transaction_type'] == 'CONSUMPTION':
+                        running_balance -= row['qty']
+                    closing_balances.append(running_balance)
+                
+                df_movement['opening_balance'] = opening_balances
+                df_movement['closing_balance'] = closing_balances
+                
+                # Display without the id column
+                df_display = df_movement[['transaction_date', 'challan_no', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
+                st.dataframe(df_display, use_container_width=True)
                 
                 # Show summary
                 col1, col2, col3 = st.columns(3)
                 total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
                 total_consumptions = df_movement[df_movement['transaction_type']=='CONSUMPTION']['qty'].sum()
-                final_balance = df_movement['closing_balance'].iloc[-1]
+                final_balance = closing_balances[-1] if closing_balances else 0
                 
                 with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
                 with col2: st.metric("Total Consumptions", f"{total_consumptions:,.0f}")
