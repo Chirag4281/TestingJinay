@@ -318,8 +318,12 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     cursor = conn.cursor()
     
     try:
-        # 1. Ensure the product exists in fg_inventory
-        cursor.execute("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (product,))
+        # 1. Ensure the product exists in fg_inventory with ZERO defaults to avoid NULLs
+        cursor.execute("""
+            INSERT OR IGNORE INTO fg_inventory 
+            (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) 
+            VALUES (?, 0, 0, 0, 0, 0, 0)
+        """, (product,))
         
         # 2. Update the specific counter based on transaction type
         if transaction_type == 'PRODUCE':
@@ -372,7 +376,8 @@ def import_rm_sheet(df):
             if pd.notna(qty) and isinstance(qty, (int, float)) and qty > 0:
                 product = str(col).strip()
                 execute_query("INSERT OR IGNORE INTO product_master (product_name, category) VALUES (?, 'RM Product')", (product,))
-                execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (product,))
+                # Initialize RM Inventory with zeros
+                execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
                 
                 # Insert purchase transaction
                 purchase_id = execute_query('''INSERT INTO purchase_transactions 
@@ -399,7 +404,8 @@ def import_fg_sheet(df):
             continue
         
         execute_query("INSERT OR IGNORE INTO product_master (product_name, category) VALUES (?, 'FG Product')", (product,))
-        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (product,))
+        # Initialize FG Inventory with zeros
+        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (product,))
         
         contractors = ['Arun Bhai', 'Sanjay', 'Shailesh S', 'Sandeep', 'Vijay', 'Manish', 'Suresh', 'Vilas', 'Sunil', 'Vachan Sing']
         
@@ -805,11 +811,11 @@ elif page == "📦 Masters":
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (product_name, product_category, unit, rate, per_pc_wt, dim_h, dim_w, dim_l, description))
                     
-                    # Add to appropriate inventory
+                    # Add to appropriate inventory WITH ZERO INITIALIZATION to prevent NULLs
                     if product_category == 'RM Product':
-                        execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (product_name,))
+                        execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product_name,))
                     else:
-                        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (product_name,))
+                        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (product_name,))
                     
                     st.success(f"✅ Product '{product_name}' added successfully!")
                     st.rerun()
@@ -975,12 +981,14 @@ elif page == "🛒 Purchase Entry":
                     
                     # UNIFIED INVENTORY LOGIC
                     if actual_prod_cat == 'RM Product':
-                        execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (product,))
+                        # Initialize with zeros if not exists
+                        execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
                         # Update RM Inventory
                         update_rm_inventory(product, qty, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id)
                     else:
                         # If buying FG/Moulding/Powder, it goes to FG Inventory as "Purchased" stock
-                        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (product,))
+                        # Initialize with zeros if not exists
+                        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (product,))
                         update_fg_inventory(product, qty, 'PURCHASE')
                     
                     st.success("✅ Purchase entry saved successfully!")
@@ -1177,10 +1185,10 @@ elif page == "🛒 Purchase Entry":
 
                                  # Add New
                                  if edit_product_category == 'RM Product':
-                                     execute_query("INSERT OR IGNORE INTO rm_inventory (product_name) VALUES (?)", (edit_product,))
+                                     execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
                                      update_rm_inventory(edit_product, edit_qty, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id)
                                  else:
-                                     execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (edit_product,))
+                                     execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                      update_fg_inventory(edit_product, edit_qty, 'PURCHASE')
                              
                              st.success("✅ Purchase entry updated successfully!")
@@ -1285,7 +1293,8 @@ elif page == "🏭 Production Entry":
                         (challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                         (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, actual_prod_cat, produced_qty, unit, description))
-                    execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (fg_product,))
+                    # Initialize with zeros if not exists
+                    execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (fg_product,))
                     update_fg_inventory(fg_product, produced_qty, 'PRODUCE')
                     
                     st.success("✅ Production entry saved successfully!")
@@ -1415,7 +1424,7 @@ elif page == "🏭 Production Entry":
                                     WHERE product_name = ?
                                 """, (old_product,))
                                 
-                                execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (edit_product,))
+                                execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                 execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
                                 execute_query("""
                                     UPDATE fg_inventory 
@@ -1530,7 +1539,8 @@ elif page == "💰 Sales Entry":
                 available = 0.0
                 if not df_stock.empty:
                     val = df_stock['closing_stock'].iloc[0]
-                    available = val if pd.notna(val) else 0.0
+                    # Handle NaN/None explicitly
+                    available = float(val) if pd.notna(val) else 0.0
                 
                 if available < qty:
                     st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
@@ -1681,7 +1691,7 @@ elif page == "💰 Sales Entry":
                                 """, (old_product,))
                                  
                                  # Add New
-                                 execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (edit_product,))
+                                 execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                  execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
                                  execute_query("""
                                     UPDATE fg_inventory 
@@ -1737,7 +1747,8 @@ elif page == "⚠️ Rejections":
                             (date, party_name, product_name, qty_rejected, reason, challan_ref)
                             VALUES (?, ?, ?, ?, ?, ?)''',
                             (mr_date.strftime('%Y-%m-%d'), mr_party, mr_product, mr_qty, mr_reason, mr_challan))
-                        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name) VALUES (?)", (mr_product,))
+                        # Initialize with zeros if not exists
+                        execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (mr_product,))
                         update_fg_inventory(mr_product, mr_qty, 'REJECT')
                         st.success("✅ Market rejection saved successfully!")
                         st.rerun()
