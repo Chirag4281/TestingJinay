@@ -1842,7 +1842,7 @@ elif page == "📈 Inventory":
     
     tab1, tab2, tab3 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory"])
     
-        with tab1:
+    with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
         df_rm_inv = fetch_data("""
             SELECT product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock, COALESCE(rate, 0) as rate
