@@ -1,7 +1,7 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 import os
 
@@ -47,6 +47,29 @@ def init_db():
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
+    # BOM (Bill of Materials) Table - NEW
+    cursor.execute('''CREATE TABLE IF NOT EXISTS bom_master (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fg_product TEXT NOT NULL,
+        rm_product TEXT NOT NULL,
+        required_qty REAL NOT NULL DEFAULT 1,
+        UNIQUE(fg_product, rm_product))''')
+    
+    # Payable/Receivable Ledger - NEW
+    cursor.execute('''CREATE TABLE IF NOT EXISTS payable_receivable_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        transaction_type TEXT NOT NULL, -- 'PAYABLE' or 'RECEIVABLE'
+        party_name TEXT NOT NULL,
+        challan_no TEXT NOT NULL,
+        invoice_date TEXT NOT NULL,
+        due_date TEXT NOT NULL,
+        amount REAL NOT NULL,
+        paid_amount REAL DEFAULT 0,
+        balance_amount REAL NOT NULL,
+        payment_status TEXT DEFAULT 'PENDING', -- 'PENDING', 'PARTIAL', 'PAID'
+        remarks TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
     # Transaction Tables
     cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +98,8 @@ def init_db():
         unit TEXT,
         rate REAL DEFAULT 0,
         amount REAL DEFAULT 0,
+        payment_terms_days INTEGER DEFAULT 60,
+        due_date TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS production_register (
@@ -173,8 +198,18 @@ def get_dynamic_lists(filter_type="All"):
 def migrate_database(cursor):
     """Migrate database schema to handle column name changes"""
     try:
-        # Check if old columns exist in rm_inventory
-                # ======================= MIGRATE RM INVENTORY =======================
+        # ======================= ADD BOM AND LEDGER COLUMNS =======================
+        # Add payment terms to sales_transactions
+        cursor.execute("PRAGMA table_info(sales_transactions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'payment_terms_days' not in columns:
+            cursor.execute("ALTER TABLE sales_transactions ADD COLUMN payment_terms_days INTEGER DEFAULT 60")
+            print("✅ Added payment_terms_days to sales_transactions")
+        if 'due_date' not in columns:
+            cursor.execute("ALTER TABLE sales_transactions ADD COLUMN due_date TEXT")
+            print("✅ Added due_date to sales_transactions")
+        
+        # ======================= MIGRATE RM INVENTORY =======================
         cursor.execute("PRAGMA table_info(rm_inventory)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'rate' not in columns:
@@ -285,24 +320,6 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     return result['balance'].iloc[0] if not result.empty else 0
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
-    # ... (previous code for movement recording) ...
-    
-    # CRITICAL FIX: Calculate closing_stock from aggregates
-    result = fetch_data("""
-        SELECT COALESCE(opening_stock, 0) as opening_stock,
-               COALESCE(total_purchased_qty, 0) as total_purchased,
-               COALESCE(total_consumed_qty, 0) as total_consumed
-        FROM rm_inventory WHERE product_name = ?
-    """, (product,))
-    
-    if not result.empty:
-        opening = result['opening_stock'].iloc[0]
-        purchased = result['total_purchased'].iloc[0]
-        consumed = result['total_consumed'].iloc[0]
-        closing_stock = opening + purchased - consumed
-        
-        # Update the database with the mathematically correct value
-        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))    
     # Calculate opening balance before this transaction (for movement record)
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
     
@@ -345,6 +362,7 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
     
     return closing_balance
+
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     """
     Updates FG Inventory and immediately recalculates Closing Stock.
@@ -387,6 +405,78 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
         st.error(f"Error updating FG Inventory: {e}")
     finally:
         conn.close()
+
+def consume_rm_for_fg_sale(fg_product, fg_qty, sale_date, challan_no, sale_id):
+    """
+    Automatically consume RM materials based on BOM when FG is sold
+    """
+    # Get BOM for this FG product
+    bom_items = fetch_data("""
+        SELECT rm_product, required_qty 
+        FROM bom_master 
+        WHERE fg_product = ?
+    """, (fg_product,))
+    
+    if bom_items.empty:
+        return  # No BOM defined for this product
+    
+    consumed_items = []
+    
+    for _, bom_row in bom_items.iterrows():
+        rm_product = bom_row['rm_product']
+        rm_qty_needed = bom_row['required_qty'] * fg_qty
+        
+        # Check if RM product exists in inventory
+        rm_check = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_product,))
+        
+        if rm_check.empty:
+            st.warning(f"⚠️ RM Product '{rm_product}' not found in inventory!")
+            continue
+        
+        available_stock = rm_check['closing_stock'].iloc[0]
+        
+        if available_stock < rm_qty_needed:
+            st.warning(f"⚠️ Insufficient stock for {rm_product}! Available: {available_stock}, Required: {rm_qty_needed}")
+            continue
+        
+        # Consume the RM material
+        update_rm_inventory(rm_product, rm_qty_needed, 'CONSUMPTION', sale_date, challan_no, sale_id)
+        consumed_items.append(f"{rm_product}: {rm_qty_needed}")
+    
+    return consumed_items
+
+def create_receivable_entry(party_name, challan_no, invoice_date, amount, payment_days=60):
+    """Create receivable entry in ledger"""
+    from datetime import datetime, timedelta
+    
+    # Calculate due date
+    if isinstance(invoice_date, str):
+        invoice_date = datetime.strptime(invoice_date, '%Y-%m-%d')
+    
+    due_date = invoice_date + timedelta(days=payment_days)
+    due_date_str = due_date.strftime('%Y-%m-%d')
+    
+    execute_query('''INSERT INTO payable_receivable_ledger 
+        (transaction_type, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        ('RECEIVABLE', party_name, challan_no, invoice_date.strftime('%Y-%m-%d'), due_date_str, 
+         amount, 0, amount, 'PENDING', f'{payment_days} days payment terms'))
+
+def check_overdue_payments():
+    """Check and return list of overdue payments"""
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    overdue = fetch_data("""
+        SELECT id, party_name, challan_no, invoice_date, due_date, amount, balance_amount, 
+               julianday(?) - julianday(due_date) as days_overdue
+        FROM payable_receivable_ledger 
+        WHERE transaction_type = 'RECEIVABLE' 
+        AND payment_status != 'PAID' 
+        AND due_date < ?
+        ORDER BY days_overdue DESC
+    """, (today, today))
+    
+    return overdue
 
 # ======================= EXCEL IMPORT FUNCTIONS =======================
 def import_rm_sheet(df):
@@ -571,6 +661,12 @@ def export_to_excel():
         
         df_pr = fetch_data("SELECT * FROM party_rejection_register ORDER BY date DESC")
         df_pr.to_excel(writer, sheet_name='Party Rejections', index=False)
+        
+        df_bom = fetch_data("SELECT * FROM bom_master ORDER BY fg_product, rm_product")
+        df_bom.to_excel(writer, sheet_name='BOM Master', index=False)
+        
+        df_ledger = fetch_data("SELECT * FROM payable_receivable_ledger ORDER BY due_date")
+        df_ledger.to_excel(writer, sheet_name='Payable_Receivable_Ledger', index=False)
     
     output.seek(0)
     return output
@@ -633,6 +729,13 @@ st.markdown("""
         border-radius: 3px;
         cursor: pointer;
     }
+    .overdue-alert {
+        background-color: #ffebee;
+        border-left: 5px solid #f44336;
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 3px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -655,7 +758,7 @@ with st.sidebar:
     page = st.radio(
         "Navigation",
         ["📊 Dashboard", "📦 Masters", "🛒 Purchase Entry", "🏭 Production Entry", 
-         "💰 Sales Entry", "⚠️ Rejections", "📈 Inventory", "📋 Reports", "📤 Import/Export"],
+         "💰 Sales Entry", "📒 Payable/Receivable Ledger", "⚠️ Rejections", "📈 Inventory", "📋 Reports", "📤 Import/Export"],
         index=0
     )
     
@@ -665,6 +768,21 @@ with st.sidebar:
 # ======================= DASHBOARD =======================
 if page == "📊 Dashboard":
     st.markdown('<h1 class="main-header">🏭 Jinay ERP Dashboard</h1>', unsafe_allow_html=True)
+    
+    # Check for overdue payments and show notifications
+    overdue_payments = check_overdue_payments()
+    if not overdue_payments.empty:
+        st.error(f"⚠️ **ALERT: {len(overdue_payments)} Overdue Payment(s) Found!**")
+        for _, payment in overdue_payments.head(5).iterrows():
+            st.markdown(f"""
+            <div class="overdue-alert">
+                <strong>{payment['party_name']}</strong> - Challan: {payment['challan_no']}<br>
+                Amount: ₹{payment['balance_amount']:,.2f} | Due Date: {payment['due_date']} | 
+                <span style="color: red; font-weight: bold;">{int(payment['days_overdue'])} Days Overdue</span>
+            </div>
+            """, unsafe_allow_html=True)
+        if len(overdue_payments) > 5:
+            st.warning(f"... and {len(overdue_payments) - 5} more overdue payments")
     
     df_rm_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category='RM Product'")
     df_fg_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'Powder')")
@@ -735,8 +853,7 @@ if page == "📊 Dashboard":
 elif page == "📦 Masters":
     st.subheader("📦 Master Management")
     
-    # Removed Contractor Tab, merged into Parties
-    tab1, tab2 = st.tabs(["👥 Parties (All Types)", "📦 Products"])
+    tab1, tab2, tab3 = st.tabs(["👥 Parties (All Types)", "📦 Products", "🔧 BOM (Bill of Materials)"])
     
     with tab1:
         st.markdown("### Add New Party (Party/Moulder/Contractor)")
@@ -921,6 +1038,65 @@ elif page == "📦 Masters":
                                 st.session_state.edit_mode = False
                                 st.session_state.edit_id = None
                                 st.rerun()
+    
+    with tab3:
+        st.markdown("### 🔧 BOM (Bill of Materials) Management")
+        st.info("Define RM materials required for each FG product. When FG is sold, RM will be auto-consumed.")
+        
+        # Add BOM Entry
+        st.markdown("#### Add BOM Entry")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Get FG products
+            df_fg = fetch_data("SELECT product_name FROM product_master WHERE category IN ('FG Product', 'Moulding Product') ORDER BY product_name")
+            fg_list = df_fg['product_name'].tolist() if not df_fg.empty else []
+            bom_fg_product = st.selectbox("FG Product", fg_list if fg_list else ["No FG products"], key="bom_fg_select")
+        
+        with col2:
+            # Get RM products
+            df_rm = fetch_data("SELECT product_name FROM product_master WHERE category = 'RM Product' ORDER BY product_name")
+            rm_list = df_rm['product_name'].tolist() if not df_rm.empty else []
+            bom_rm_product = st.selectbox("RM Material", rm_list if rm_list else ["No RM products"], key="bom_rm_select")
+        
+        with col3:
+            bom_qty = st.number_input("Required Quantity", min_value=0.001, step=0.001, value=1.0, key="bom_qty_input")
+        
+        if st.button("Add to BOM", type="primary", key="add_bom_btn"):
+            if bom_fg_product != "No FG products" and bom_rm_product != "No RM products":
+                try:
+                    execute_query('''INSERT OR REPLACE INTO bom_master 
+                        (fg_product, rm_product, required_qty)
+                        VALUES (?, ?, ?)''',
+                        (bom_fg_product, bom_rm_product, bom_qty))
+                    st.success(f"✅ BOM updated: {bom_fg_product} requires {bom_qty} x {bom_rm_product}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+        
+        st.markdown("#### BOM List")
+        df_bom = fetch_data("""
+            SELECT b.fg_product, b.rm_product, b.required_qty, p.unit as rm_unit
+            FROM bom_master b
+            LEFT JOIN product_master p ON b.rm_product = p.product_name
+            ORDER BY b.fg_product, b.rm_product
+        """)
+        
+        if not df_bom.empty:
+            st.dataframe(df_bom, use_container_width=True)
+            
+            # Delete BOM entry
+            st.markdown("#### Delete BOM Entry")
+            bom_to_delete = st.selectbox("Select BOM to Delete", 
+                                         [f"{row['fg_product']} - {row['rm_product']}" for _, row in df_bom.iterrows()],
+                                         key="delete_bom_select")
+            if st.button("Delete BOM Entry", key="delete_bom_btn"):
+                fg, rm = bom_to_delete.split(" - ")
+                execute_query("DELETE FROM bom_master WHERE fg_product = ? AND rm_product = ?", (fg, rm))
+                st.success("✅ BOM entry deleted!")
+                st.rerun()
+        else:
+            st.info("No BOM entries defined yet")
 
 # ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
@@ -1561,6 +1737,7 @@ elif page == "💰 Sales Entry":
         with col3:
             unit = st.selectbox("Unit", unit_options, index=unit_options.index(unit_val) if unit_val in unit_options else 4)
             rate = st.number_input("Rate per Unit", min_value=0.0, value=float(rate_val), step=0.01)
+            payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=60, step=1)
             if qty and rate:
                 amount = qty * rate
                 st.metric("Total Amount", f"₹{amount:,.2f}")
@@ -1591,10 +1768,25 @@ elif page == "💰 Sales Entry":
                     st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
                 else:
                     try:
+                        # Calculate due date
+                        from datetime import timedelta
+                        sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
+                        due_date = sale_date_dt + timedelta(days=payment_days)
+                        
                         execute_query('''INSERT INTO sales_transactions 
-                            (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                            (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, qty*rate))
+                            (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, qty*rate, payment_days, due_date.strftime('%Y-%m-%d')))
+                        
+                        sale_id = execute_query('''SELECT last_insert_rowid()''', ())
+                        
+                        # --- AUTO CONSUME RM MATERIALS IF FG PRODUCT ---
+                        consumed_items = []
+                        if actual_prod_cat in ['FG Product', 'Moulding Product']:
+                            consumed_items = consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, sale_id)
+                            
+                            if consumed_items:
+                                st.info(f"📦 RM Materials Auto-Consumed: {', '.join(consumed_items)}")
                         
                         # --- SMART INVENTORY UPDATE ---
                         if actual_prod_cat == 'RM Product':
@@ -1605,7 +1797,12 @@ elif page == "💰 Sales Entry":
                             # Treat sale of FG as normal Sale
                             update_fg_inventory(product, qty, 'SALE')
                         
+                        # --- CREATE RECEIVABLE ENTRY ---
+                        create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), qty*rate, payment_days)
+                        
                         st.success("✅ Sale entry saved successfully!")
+                        if consumed_items:
+                            st.info(f"📦 RM materials consumed automatically based on BOM")
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
@@ -1615,7 +1812,7 @@ elif page == "💰 Sales Entry":
     st.markdown("---")
     st.markdown("### 📝 Manage Sales Entries")
     
-    df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM sales_transactions ORDER BY date DESC")
+    df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date FROM sales_transactions ORDER BY date DESC")
     
     if not df_all_sales.empty:
         # Select record to edit/delete
@@ -1708,6 +1905,7 @@ elif page == "💰 Sales Entry":
                                                  index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
                                                  key="edit_sale_unit")
                          edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_sale_rate")
+                         edit_payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=int(row['payment_terms_days']) if pd.notna(row['payment_terms_days']) else 60, step=1, key="edit_sale_payment_days")
                          if edit_qty and edit_rate:
                              amount = edit_qty * edit_rate
                              st.metric("Total Amount", f"₹{amount:,.2f}")
@@ -1723,9 +1921,10 @@ elif page == "💰 Sales Entry":
                              
                              # Update the transaction
                              execute_query('''UPDATE sales_transactions SET 
-                                 challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?
+                                 challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
                                  WHERE id=?''',
-                                 (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
+                                 (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, edit_payment_days, 
+                                  (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d'), st.session_state.edit_id))
                              
                              # Handle inventory changes
                              if old_product == edit_product and old_prod_cat == edit_product_category:
@@ -1783,6 +1982,135 @@ elif page == "💰 Sales Entry":
     else:
         st.info("No sales entries found")
 
+# ======================= PAYABLE/RECEIVABLE LEDGER =======================
+elif page == "📒 Payable/Receivable Ledger":
+    st.subheader("📒 Payable/Receivable Ledger")
+    
+    # Check for overdue payments
+    overdue_payments = check_overdue_payments()
+    if not overdue_payments.empty:
+        st.error(f"⚠️ **ALERT: {len(overdue_payments)} Overdue Payment(s)!**")
+        for _, payment in overdue_payments.iterrows():
+            st.markdown(f"""
+            <div class="overdue-alert">
+                <strong>{payment['party_name']}</strong> - Challan: {payment['challan_no']}<br>
+                Amount Due: ₹{payment['balance_amount']:,.2f} | Due Date: {payment['due_date']} | 
+                <span style="color: red; font-weight: bold;">{int(payment['days_overdue'])} Days Overdue</span>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    tab1, tab2 = st.tabs(["Receivables (Sales)", "Payables (Purchases)"])
+    
+    with tab1:
+        st.markdown("### Receivables from Customers")
+        
+        # Filter options
+        filter_status = st.selectbox("Filter by Status", ["All", "PENDING", "PARTIAL", "PAID"], key="recv_filter_status")
+        filter_party = st.selectbox("Filter by Party", ["All"] + fetch_data("SELECT DISTINCT party_name FROM payable_receivable_ledger WHERE transaction_type='RECEIVABLE' ORDER BY party_name")['party_name'].tolist(), key="recv_filter_party")
+        
+        # Build query
+        query = """
+            SELECT id, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks,
+                   julianday(date('now')) - julianday(due_date) as days_overdue
+            FROM payable_receivable_ledger 
+            WHERE transaction_type = 'RECEIVABLE'
+        """
+        params = []
+        
+        if filter_status != "All":
+            query += " AND payment_status = ?"
+            params.append(filter_status)
+        
+        if filter_party != "All":
+            query += " AND party_name = ?"
+            params.append(filter_party)
+        
+        query += " ORDER BY due_date"
+        
+        df_recv = fetch_data(query, tuple(params))
+        
+        if not df_recv.empty:
+            # Display summary metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Receivables", f"₹{df_recv['amount'].sum():,.2f}")
+            with col2:
+                st.metric("Total Received", f"₹{df_recv['paid_amount'].sum():,.2f}")
+            with col3:
+                st.metric("Total Outstanding", f"₹{df_recv['balance_amount'].sum():,.2f}")
+            
+            st.dataframe(df_recv, use_container_width=True)
+            
+            # Payment entry
+            st.markdown("### Record Payment Received")
+            col1, col2 = st.columns(2)
+            with col1:
+                recv_to_pay = st.selectbox("Select Invoice", 
+                                          [f"{row['challan_no']} - {row['party_name']} - ₹{row['balance_amount']:,.2f}" 
+                                           for _, row in df_recv[df_recv['payment_status'] != 'PAID'].iterrows()],
+                                          key="recv_payment_select")
+            with col2:
+                payment_amount = st.number_input("Payment Amount", min_value=0.01, step=0.01, key="payment_amount_input")
+            
+            if st.button("Record Payment", type="primary", key="record_payment_btn"):
+                if recv_to_pay and payment_amount > 0:
+                    challan = recv_to_pay.split(" - ")[0]
+                    party = recv_to_pay.split(" - ")[1]
+                    
+                    # Get current record
+                    current = fetch_data("""
+                        SELECT id, paid_amount, balance_amount, amount, payment_status 
+                        FROM payable_receivable_ledger 
+                        WHERE challan_no = ? AND party_name = ? AND transaction_type='RECEIVABLE'
+                    """, (challan, party))
+                    
+                    if not current.empty:
+                        record = current.iloc[0]
+                        new_paid = record['paid_amount'] + payment_amount
+                        new_balance = record['balance_amount'] - payment_amount
+                        
+                        if new_balance <= 0:
+                            new_status = 'PAID'
+                            new_balance = 0
+                        elif new_paid > 0:
+                            new_status = 'PARTIAL'
+                        else:
+                            new_status = 'PENDING'
+                        
+                        execute_query("""
+                            UPDATE payable_receivable_ledger 
+                            SET paid_amount = ?, balance_amount = ?, payment_status = ?
+                            WHERE challan_no = ? AND party_name = ? AND transaction_type='RECEIVABLE'
+                        """, (new_paid, new_balance, new_status, challan, party))
+                        
+                        st.success(f"✅ Payment of ₹{payment_amount:,.2f} recorded successfully!")
+                        st.rerun()
+        else:
+            st.info("No receivable records found")
+    
+    with tab2:
+        st.markdown("### Payables to Suppliers")
+        df_pay = fetch_data("""
+            SELECT id, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks
+            FROM payable_receivable_ledger 
+            WHERE transaction_type = 'PAYABLE'
+            ORDER BY due_date
+        """)
+        
+        if not df_pay.empty:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Payables", f"₹{df_pay['amount'].sum():,.2f}")
+            with col2:
+                st.metric("Total Paid", f"₹{df_pay['paid_amount'].sum():,.2f}")
+            with col3:
+                st.metric("Total Outstanding", f"₹{df_pay['balance_amount'].sum():,.2f}")
+            
+            st.dataframe(df_pay, use_container_width=True)
+        else:
+            st.info("No payable records found")
+
+# ======================= REJECTIONS =======================
 elif page == "⚠️ Rejections":
     st.subheader("⚠️ Rejection Management")
     
@@ -2027,7 +2355,7 @@ elif page == "📋 Reports":
     
     report_type = st.selectbox("Select Report Type",
         ["Production Summary", "Sales Summary", "Purchase Summary", 
-         "Contractor Performance", "Party-wise Sales", "Rejection Analysis", "Stock Movement"])
+         "Contractor Performance", "Party-wise Sales", "Rejection Analysis", "Stock Movement", "Overdue Payments"])
     
     if report_type == "Production Summary":
         st.markdown("### Production Summary Report")
@@ -2109,6 +2437,41 @@ elif page == "📋 Reports":
             df = fetch_data("SELECT product_name, opening_stock, (produced_qty + purchased_qty) as additions, (sold_qty + rejected_qty) as deductions, closing_stock FROM fg_inventory ORDER BY product_name")
             if not df.empty:
                 st.dataframe(df, use_container_width=True)
+    
+    elif report_type == "Overdue Payments":
+        st.markdown("### Overdue Payments Report")
+        overdue = check_overdue_payments()
+        
+        if not overdue.empty:
+            st.error(f"⚠️ **{len(overdue)} Overdue Payment(s) Found**")
+            
+            # Summary metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Overdue Amount", f"₹{overdue['balance_amount'].sum():,.2f}")
+            with col2:
+                st.metric("Max Days Overdue", f"{int(overdue['days_overdue'].max())} days")
+            with col3:
+                st.metric("Average Days Overdue", f"{int(overdue['days_overdue'].mean())} days")
+            
+            st.dataframe(overdue, use_container_width=True)
+            
+            # Visualize overdue by party
+            st.markdown("### Overdue by Party")
+            df_party_overdue = fetch_data("""
+                SELECT party_name, COUNT(*) as count, SUM(balance_amount) as total_overdue, AVG(julianday(date('now')) - julianday(due_date)) as avg_days
+                FROM payable_receivable_ledger 
+                WHERE transaction_type = 'RECEIVABLE' 
+                AND payment_status != 'PAID' 
+                AND due_date < date('now')
+                GROUP BY party_name
+                ORDER BY total_overdue DESC
+            """)
+            
+            if not df_party_overdue.empty:
+                st.bar_chart(df_party_overdue.set_index('party_name')['total_overdue'])
+        else:
+            st.success("✅ No overdue payments! All payments are up to date.")
 
 # ======================= IMPORT/EXPORT =======================
 elif page == "📤 Import/Export":
