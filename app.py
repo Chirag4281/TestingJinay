@@ -1851,7 +1851,8 @@ elif page == "📒 Payable/Receivable Ledger":
             st.dataframe(df_recv, use_container_width=True)
             
             st.markdown("### 💵 Record Payment Received from Customer")
-            unpaid_recv = df_recv[df_recv['payment_status'] != 'PAID']
+            # FIX: Only show invoices that actually have a balance > 0
+            unpaid_recv = df_recv[(df_recv['payment_status'] != 'PAID') & (df_recv['balance_amount'] > 0)]
             
             if not unpaid_recv.empty:
                 col1, col2 = st.columns(2)
@@ -1861,7 +1862,16 @@ elif page == "📒 Payable/Receivable Ledger":
                     recv_to_pay = st.selectbox("Select Invoice", recv_options, key="recv_payment_select")
                 with col2:
                     if recv_to_pay:
-                        selected_balance = float(recv_to_pay.split("₹")[-1].replace(",", ""))
+                        try:
+                            # Safely parse the balance amount
+                            selected_balance = float(recv_to_pay.split("₹")[-1].replace(",", ""))
+                        except:
+                            selected_balance = 0.01
+                        
+                        # FIX: Ensure value is never below min_value (0.01) to prevent StreamlitValueBelowMinError
+                        if selected_balance < 0.01:
+                            selected_balance = 0.01
+                            
                         payment_amount = st.number_input("Payment Amount", min_value=0.01, max_value=selected_balance, value=selected_balance, step=0.01, key="payment_amount_input")
                     else:
                         payment_amount = st.number_input("Payment Amount", min_value=0.01, step=0.01, key="payment_amount_input")
@@ -1938,7 +1948,8 @@ elif page == "📒 Payable/Receivable Ledger":
             st.dataframe(df_pay, use_container_width=True)
             
             st.markdown("### 💸 Record Payment Made to Supplier")
-            unpaid_pay = df_pay[df_pay['payment_status'] != 'PAID']
+            # FIX: Only show invoices that actually have a balance > 0
+            unpaid_pay = df_pay[(df_pay['payment_status'] != 'PAID') & (df_pay['balance_amount'] > 0)]
             
             if not unpaid_pay.empty:
                 col1, col2 = st.columns(2)
@@ -1948,7 +1959,16 @@ elif page == "📒 Payable/Receivable Ledger":
                     pay_to_pay = st.selectbox("Select Invoice to Pay", pay_options, key="pay_payment_select")
                 with col2:
                     if pay_to_pay:
-                        selected_balance_pay = float(pay_to_pay.split("₹")[-1].replace(",", ""))
+                        try:
+                            # Safely parse the balance amount
+                            selected_balance_pay = float(pay_to_pay.split("₹")[-1].replace(",", ""))
+                        except:
+                            selected_balance_pay = 0.01
+                            
+                        # FIX: Ensure value is never below min_value (0.01) to prevent StreamlitValueBelowMinError
+                        if selected_balance_pay < 0.01:
+                            selected_balance_pay = 0.01
+                            
                         payment_amount_pay = st.number_input("Payment Amount", min_value=0.01, max_value=selected_balance_pay, value=selected_balance_pay, step=0.01, key="payment_amount_pay_input")
                     else:
                         payment_amount_pay = st.number_input("Payment Amount", min_value=0.01, step=0.01, key="payment_amount_pay_input")
@@ -1989,7 +2009,6 @@ elif page == "📒 Payable/Receivable Ledger":
                 st.success("✅ All payables are paid!")
         else:
             st.info("No payable records found. Payables are automatically created when you make purchases.")
-
 # ======================= REJECTIONS =======================
 elif page == "⚠️ Rejections":
     st.subheader("⚠️ Rejection Management")
