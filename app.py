@@ -1795,13 +1795,15 @@ elif page == "💰 Sales Entry":
         st.info("No sales entries found")
 
 # ======================= PAYABLE/RECEIVABLE LEDGER =======================
+# ======================= PAYABLE/RECEIVABLE LEDGER =======================
 elif page == "📒 Payable/Receivable Ledger":
     st.subheader("📒 Payable/Receivable Ledger")
     
+    # Check for overdue receivables
     overdue_payments = check_overdue_payments()
     if not overdue_payments.empty:
         st.error(f"⚠️ **ALERT: {len(overdue_payments)} Overdue Receivable(s)!**")
-        for _, payment in overdue_payments.iterrows():
+        for _, payment in overdue_payments.head(5).iterrows():
             st.markdown(f"""
             <div class="overdue-alert">
             <strong>{payment['party_name']}</strong> - Challan: {payment['challan_no']}<br>
@@ -1809,18 +1811,25 @@ elif page == "📒 Payable/Receivable Ledger":
             <span style="color: red; font-weight: bold;">{int(payment['days_overdue'])} Days Overdue</span>
             </div>
             """, unsafe_allow_html=True)
+        if len(overdue_payments) > 5:
+            st.warning(f"... and {len(overdue_payments) - 5} more overdue receivables")
     
+    # Check for overdue payables
     overdue_payables = check_overdue_payables()
     if not overdue_payables.empty:
         st.warning(f"⚠️ **ALERT: {len(overdue_payables)} Overdue Payable(s) - You need to pay!**")
     
-    tab1, tab2 = st.tabs(["💵 Receivables (Sales - Customer owes you)", "💸 Payables (Purchases - You owe supplier)"])
+    tab1, tab2 = st.tabs(["💵 Receivables (Customer owes you)", "💸 Payables (You owe supplier)"])
     
+    # =================== TAB 1: RECEIVABLES ===================
     with tab1:
-        st.markdown("### Receivables from Customers")
+        st.markdown("### 💵 Receivables from Customers")
         
         filter_status = st.selectbox("Filter by Status", ["All", "PENDING", "PARTIAL", "PAID"], key="recv_filter_status")
-        filter_party = st.selectbox("Filter by Party", ["All"] + fetch_data("SELECT DISTINCT party_name FROM payable_receivable_ledger WHERE transaction_type='RECEIVABLE' ORDER BY party_name")['party_name'].tolist(), key="recv_filter_party")
+        
+        party_filter_data = fetch_data("SELECT DISTINCT party_name FROM payable_receivable_ledger WHERE transaction_type='RECEIVABLE' ORDER BY party_name")
+        party_options = ["All"] + (party_filter_data['party_name'].tolist() if not party_filter_data.empty else [])
+        filter_party = st.selectbox("Filter by Party", party_options, key="recv_filter_party")
         
         query = """
         SELECT id, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks,
@@ -1840,84 +1849,117 @@ elif page == "📒 Payable/Receivable Ledger":
         df_recv = fetch_data(query, tuple(params))
         
         if not df_recv.empty:
-            col1, col2, col3 = st.columns(3)
+            # Summary Metrics
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Receivables", f"₹{df_recv['amount'].sum():,.2f}")
+                st.metric("📊 Total Invoices", len(df_recv))
             with col2:
-                st.metric("Total Received", f"₹{df_recv['paid_amount'].sum():,.2f}")
+                st.metric("💰 Total Billed", f"₹{df_recv['amount'].sum():,.2f}")
             with col3:
-                st.metric("Total Outstanding", f"₹{df_recv['balance_amount'].sum():,.2f}")
+                st.metric("✅ Total Received", f"₹{df_recv['paid_amount'].sum():,.2f}")
+            with col4:
+                st.metric("⏳ Total Outstanding", f"₹{df_recv['balance_amount'].sum():,.2f}")
             
-            st.dataframe(df_recv, use_container_width=True)
+            # Display table with formatting
+            display_df = df_recv[['party_name', 'challan_no', 'invoice_date', 'due_date', 'amount', 'paid_amount', 'balance_amount', 'payment_status']].copy()
+            display_df.columns = ['Party', 'Challan No', 'Invoice Date', 'Due Date', 'Amount', 'Paid', 'Balance', 'Status']
+            st.dataframe(display_df, use_container_width=True)
             
+            st.markdown("---")
             st.markdown("### 💵 Record Payment Received from Customer")
-            # FIX: Only show invoices that actually have a balance > 0
-            unpaid_recv = df_recv[(df_recv['payment_status'] != 'PAID') & (df_recv['balance_amount'] > 0)]
+            
+            # FIX: Only show invoices with balance > 0 (prevents StreamlitValueBelowMinError)
+            unpaid_recv = df_recv[(df_recv['payment_status'] != 'PAID') & (df_recv['balance_amount'] > 0)].copy()
             
             if not unpaid_recv.empty:
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns([2, 1, 1])
                 with col1:
-                    recv_options = [f"{row['challan_no']} - {row['party_name']} - Balance: ₹{row['balance_amount']:,.2f}"
-                        for _, row in unpaid_recv.iterrows()]
-                    recv_to_pay = st.selectbox("Select Invoice", recv_options, key="recv_payment_select")
+                    recv_options = [
+                        f"{row['challan_no']} | {row['party_name']} | Balance: ₹{row['balance_amount']:,.2f} | Due: {row['due_date']}"
+                        for _, row in unpaid_recv.iterrows()
+                    ]
+                    recv_to_pay = st.selectbox("Select Invoice to Record Payment", recv_options, key="recv_payment_select")
+                
                 with col2:
                     if recv_to_pay:
                         try:
-                            # Safely parse the balance amount
-                            selected_balance = float(recv_to_pay.split("₹")[-1].replace(",", ""))
-                        except:
+                            # Safely extract balance from the option string
+                            balance_part = recv_to_pay.split("₹")[-1].split(" |")[0].replace(",", "")
+                            selected_balance = float(balance_part)
+                        except Exception:
                             selected_balance = 0.01
                         
-                        # FIX: Ensure value is never below min_value (0.01) to prevent StreamlitValueBelowMinError
+                        # FIX: Ensure value is never below min_value (0.01)
                         if selected_balance < 0.01:
                             selected_balance = 0.01
-                            
-                        payment_amount = st.number_input("Payment Amount", min_value=0.01, max_value=selected_balance, value=selected_balance, step=0.01, key="payment_amount_input")
+                        
+                        payment_amount = st.number_input(
+                            "Payment Amount (₹)", 
+                            min_value=0.01, 
+                            max_value=selected_balance, 
+                            value=selected_balance, 
+                            step=0.01, 
+                            key="payment_amount_recv_input"
+                        )
                     else:
-                        payment_amount = st.number_input("Payment Amount", min_value=0.01, step=0.01, key="payment_amount_input")
+                        payment_amount = st.number_input("Payment Amount (₹)", min_value=0.01, step=0.01, key="payment_amount_recv_input")
                 
-                if st.button("💵 Record Payment Received", type="primary", key="record_payment_btn"):
-                    if recv_to_pay and payment_amount > 0:
-                        challan = recv_to_pay.split(" - ")[0]
-                        party = recv_to_pay.split(" - ")[1]
-                        
-                        current = fetch_data("""
-                        SELECT id, paid_amount, balance_amount, amount, payment_status
-                        FROM payable_receivable_ledger
-                        WHERE challan_no = ? AND party_name = ? AND transaction_type='RECEIVABLE'
-                        """, (challan, party))
-                        
-                        if not current.empty:
-                            record = current.iloc[0]
-                            new_paid = record['paid_amount'] + payment_amount
-                            new_balance = record['balance_amount'] - payment_amount
+                with col3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("💵 Record Payment", type="primary", key="record_payment_recv_btn"):
+                        if recv_to_pay and payment_amount > 0:
+                            # Parse challan and party from selection
+                            parts = recv_to_pay.split(" | ")
+                            challan = parts[0].strip()
+                            party = parts[1].strip()
                             
-                            if new_balance <= 0:
-                                new_status = 'PAID'
-                                new_balance = 0
-                            elif new_paid > 0:
-                                new_status = 'PARTIAL'
-                            else:
-                                new_status = 'PENDING'
-                            
-                            execute_query("""
-                            UPDATE payable_receivable_ledger
-                            SET paid_amount = ?, balance_amount = ?, payment_status = ?
+                            # Get current record
+                            current = fetch_data("""
+                            SELECT id, paid_amount, balance_amount, amount, payment_status
+                            FROM payable_receivable_ledger
                             WHERE challan_no = ? AND party_name = ? AND transaction_type='RECEIVABLE'
-                            """, (new_paid, new_balance, new_status, challan, party))
+                            """, (challan, party))
                             
-                            st.success(f"✅ Payment of ₹{payment_amount:,.2f} recorded successfully!")
-                            st.rerun()
+                            if not current.empty:
+                                record = current.iloc[0]
+                                new_paid = float(record['paid_amount']) + float(payment_amount)
+                                new_balance = float(record['balance_amount']) - float(payment_amount)
+                                
+                                # Determine new status based on calculations
+                                if new_balance <= 0.01:
+                                    new_status = 'PAID'
+                                    new_balance = 0
+                                elif new_paid > 0:
+                                    new_status = 'PARTIAL'
+                                else:
+                                    new_status = 'PENDING'
+                                
+                                # Update the ledger with all calculated values
+                                execute_query("""
+                                UPDATE payable_receivable_ledger
+                                SET paid_amount = ?, balance_amount = ?, payment_status = ?, remarks = ?
+                                WHERE challan_no = ? AND party_name = ? AND transaction_type='RECEIVABLE'
+                                """, (new_paid, new_balance, new_status, 
+                                      f"Payment of ₹{payment_amount:,.2f} received. Previous status: {record['payment_status']}",
+                                      challan, party))
+                                
+                                st.success(f"✅ Payment of ₹{payment_amount:,.2f} recorded successfully!")
+                                st.info(f"📝 New Balance: ₹{new_balance:,.2f} | Status: {new_status}")
+                                st.rerun()
             else:
-                st.success("✅ All receivables are paid!")
+                st.success("✅ All receivables are fully paid! No outstanding balance.")
         else:
-            st.info("No receivable records found")
+            st.info("ℹ️ No receivable records found. Receivables are automatically created when you make sales.")
     
+    # =================== TAB 2: PAYABLES ===================
     with tab2:
-        st.markdown("### Payables to Suppliers")
+        st.markdown("### 💸 Payables to Suppliers")
         
         filter_status_pay = st.selectbox("Filter by Status", ["All", "PENDING", "PARTIAL", "PAID"], key="pay_filter_status")
-        filter_party_pay = st.selectbox("Filter by Party", ["All"] + fetch_data("SELECT DISTINCT party_name FROM payable_receivable_ledger WHERE transaction_type='PAYABLE' ORDER BY party_name")['party_name'].tolist(), key="pay_filter_party")
+        
+        party_filter_data_pay = fetch_data("SELECT DISTINCT party_name FROM payable_receivable_ledger WHERE transaction_type='PAYABLE' ORDER BY party_name")
+        party_options_pay = ["All"] + (party_filter_data_pay['party_name'].tolist() if not party_filter_data_pay.empty else [])
+        filter_party_pay = st.selectbox("Filter by Party", party_options_pay, key="pay_filter_party")
         
         query_pay = """
         SELECT id, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks,
@@ -1937,79 +1979,143 @@ elif page == "📒 Payable/Receivable Ledger":
         df_pay = fetch_data(query_pay, tuple(params_pay))
         
         if not df_pay.empty:
-            col1, col2, col3 = st.columns(3)
+            # Summary Metrics
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Payables", f"₹{df_pay['amount'].sum():,.2f}")
+                st.metric("📊 Total Invoices", len(df_pay))
             with col2:
-                st.metric("Total Paid", f"₹{df_pay['paid_amount'].sum():,.2f}")
+                st.metric("💰 Total Billed", f"₹{df_pay['amount'].sum():,.2f}")
             with col3:
-                st.metric("Total Outstanding", f"₹{df_pay['balance_amount'].sum():,.2f}")
+                st.metric("✅ Total Paid", f"₹{df_pay['paid_amount'].sum():,.2f}")
+            with col4:
+                st.metric("⏳ Total Outstanding", f"₹{df_pay['balance_amount'].sum():,.2f}")
             
-            st.dataframe(df_pay, use_container_width=True)
+            # Display table
+            display_df_pay = df_pay[['party_name', 'challan_no', 'invoice_date', 'due_date', 'amount', 'paid_amount', 'balance_amount', 'payment_status']].copy()
+            display_df_pay.columns = ['Party/Supplier', 'Challan No', 'Invoice Date', 'Due Date', 'Amount', 'Paid', 'Balance', 'Status']
+            st.dataframe(display_df_pay, use_container_width=True)
             
+            st.markdown("---")
             st.markdown("### 💸 Record Payment Made to Supplier")
-            # FIX: Only show invoices that actually have a balance > 0
-            unpaid_pay = df_pay[(df_pay['payment_status'] != 'PAID') & (df_pay['balance_amount'] > 0)]
+            
+            # FIX: Only show invoices with balance > 0
+            unpaid_pay = df_pay[(df_pay['payment_status'] != 'PAID') & (df_pay['balance_amount'] > 0)].copy()
             
             if not unpaid_pay.empty:
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns([2, 1, 1])
                 with col1:
-                    pay_options = [f"{row['challan_no']} - {row['party_name']} - Balance: ₹{row['balance_amount']:,.2f}"
-                        for _, row in unpaid_pay.iterrows()]
+                    pay_options = [
+                        f"{row['challan_no']} | {row['party_name']} | Balance: ₹{row['balance_amount']:,.2f} | Due: {row['due_date']}"
+                        for _, row in unpaid_pay.iterrows()
+                    ]
                     pay_to_pay = st.selectbox("Select Invoice to Pay", pay_options, key="pay_payment_select")
+                
                 with col2:
                     if pay_to_pay:
                         try:
-                            # Safely parse the balance amount
-                            selected_balance_pay = float(pay_to_pay.split("₹")[-1].replace(",", ""))
-                        except:
+                            # Safely extract balance from the option string
+                            balance_part = pay_to_pay.split("₹")[-1].split(" |")[0].replace(",", "")
+                            selected_balance_pay = float(balance_part)
+                        except Exception:
                             selected_balance_pay = 0.01
-                            
-                        # FIX: Ensure value is never below min_value (0.01) to prevent StreamlitValueBelowMinError
+                        
+                        # FIX: Ensure value is never below min_value
                         if selected_balance_pay < 0.01:
                             selected_balance_pay = 0.01
-                            
-                        payment_amount_pay = st.number_input("Payment Amount", min_value=0.01, max_value=selected_balance_pay, value=selected_balance_pay, step=0.01, key="payment_amount_pay_input")
+                        
+                        payment_amount_pay = st.number_input(
+                            "Payment Amount (₹)", 
+                            min_value=0.01, 
+                            max_value=selected_balance_pay, 
+                            value=selected_balance_pay, 
+                            step=0.01, 
+                            key="payment_amount_pay_input"
+                        )
                     else:
-                        payment_amount_pay = st.number_input("Payment Amount", min_value=0.01, step=0.01, key="payment_amount_pay_input")
+                        payment_amount_pay = st.number_input("Payment Amount (₹)", min_value=0.01, step=0.01, key="payment_amount_pay_input")
                 
-                if st.button("💸 Record Payment to Supplier", type="primary", key="record_payment_pay_btn"):
-                    if pay_to_pay and payment_amount_pay > 0:
-                        challan = pay_to_pay.split(" - ")[0]
-                        party = pay_to_pay.split(" - ")[1]
-                        
-                        current = fetch_data("""
-                        SELECT id, paid_amount, balance_amount, amount, payment_status
-                        FROM payable_receivable_ledger
-                        WHERE challan_no = ? AND party_name = ? AND transaction_type='PAYABLE'
-                        """, (challan, party))
-                        
-                        if not current.empty:
-                            record = current.iloc[0]
-                            new_paid = record['paid_amount'] + payment_amount_pay
-                            new_balance = record['balance_amount'] - payment_amount_pay
+                with col3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("💸 Record Payment", type="primary", key="record_payment_pay_btn"):
+                        if pay_to_pay and payment_amount_pay > 0:
+                            # Parse challan and party from selection
+                            parts = pay_to_pay.split(" | ")
+                            challan = parts[0].strip()
+                            party = parts[1].strip()
                             
-                            if new_balance <= 0:
-                                new_status = 'PAID'
-                                new_balance = 0
-                            elif new_paid > 0:
-                                new_status = 'PARTIAL'
-                            else:
-                                new_status = 'PENDING'
-                            
-                            execute_query("""
-                            UPDATE payable_receivable_ledger
-                            SET paid_amount = ?, balance_amount = ?, payment_status = ?
+                            # Get current record
+                            current = fetch_data("""
+                            SELECT id, paid_amount, balance_amount, amount, payment_status
+                            FROM payable_receivable_ledger
                             WHERE challan_no = ? AND party_name = ? AND transaction_type='PAYABLE'
-                            """, (new_paid, new_balance, new_status, challan, party))
+                            """, (challan, party))
                             
-                            st.success(f"✅ Payment of ₹{payment_amount_pay:,.2f} recorded successfully!")
-                            st.rerun()
+                            if not current.empty:
+                                record = current.iloc[0]
+                                new_paid = float(record['paid_amount']) + float(payment_amount_pay)
+                                new_balance = float(record['balance_amount']) - float(payment_amount_pay)
+                                
+                                # Determine new status based on calculations
+                                if new_balance <= 0.01:
+                                    new_status = 'PAID'
+                                    new_balance = 0
+                                elif new_paid > 0:
+                                    new_status = 'PARTIAL'
+                                else:
+                                    new_status = 'PENDING'
+                                
+                                # Update the ledger with all calculated values
+                                execute_query("""
+                                UPDATE payable_receivable_ledger
+                                SET paid_amount = ?, balance_amount = ?, payment_status = ?, remarks = ?
+                                WHERE challan_no = ? AND party_name = ? AND transaction_type='PAYABLE'
+                                """, (new_paid, new_balance, new_status, 
+                                      f"Payment of ₹{payment_amount_pay:,.2f} made. Previous status: {record['payment_status']}",
+                                      challan, party))
+                                
+                                st.success(f"✅ Payment of ₹{payment_amount_pay:,.2f} recorded successfully!")
+                                st.info(f"📝 New Balance: ₹{new_balance:,.2f} | Status: {new_status}")
+                                st.rerun()
             else:
-                st.success("✅ All payables are paid!")
+                st.success("✅ All payables are fully paid! No outstanding balance.")
         else:
-            st.info("No payable records found. Payables are automatically created when you make purchases.")
-# ======================= REJECTIONS =======================
+            st.info("ℹ️ No payable records found. Payables are automatically created when you make purchases.")
+    
+    # =================== COMBINED FINANCIAL SUMMARY ===================
+    st.markdown("---")
+    st.markdown("### 📊 Overall Financial Summary")
+    
+    recv_summary = fetch_data("""
+    SELECT 
+        COALESCE(SUM(amount), 0) as total_billed,
+        COALESCE(SUM(paid_amount), 0) as total_received,
+        COALESCE(SUM(balance_amount), 0) as total_outstanding
+    FROM payable_receivable_ledger
+    WHERE transaction_type = 'RECEIVABLE'
+    """)
+    
+    pay_summary = fetch_data("""
+    SELECT 
+        COALESCE(SUM(amount), 0) as total_billed,
+        COALESCE(SUM(paid_amount), 0) as total_paid,
+        COALESCE(SUM(balance_amount), 0) as total_outstanding
+    FROM payable_receivable_ledger
+    WHERE transaction_type = 'PAYABLE'
+    """)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        recv_outstanding = recv_summary['total_outstanding'].iloc[0] if not recv_summary.empty else 0
+        st.metric("💵 Total Receivable Outstanding", f"₹{recv_outstanding:,.2f}", 
+                 help="Amount customers owe you")
+    with col2:
+        pay_outstanding = pay_summary['total_outstanding'].iloc[0] if not pay_summary.empty else 0
+        st.metric("💸 Total Payable Outstanding", f"₹{pay_outstanding:,.2f}", 
+                 help="Amount you owe suppliers")
+    with col3:
+        net_position = recv_outstanding - pay_outstanding
+        st.metric("📈 Net Position (Receivable - Payable)", f"₹{net_position:,.2f}",
+                 help="Positive means you're owed more than you owe")# ======================= REJECTIONS =======================
 elif page == "⚠️ Rejections":
     st.subheader("⚠️ Rejection Management")
     tab1, tab2 = st.tabs(["Market Rejection", "Party Rejection"])
