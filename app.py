@@ -2082,7 +2082,8 @@ elif page == "📒 Payable/Receivable Ledger":
             else:
                 st.success("✅ All payables are fully paid! No outstanding balance.")
         else:
-            st.info("ℹ️ No payable records found. Payables are automatically created when you make purchases.")elif page == "⚠️ Rejections":
+            st.info("ℹ️ No payable records found. Payables are automatically created when you make purchases.")
+elif page == "⚠️ Rejections":
     st.subheader("⚠️ Rejection Management")
     tab1, tab2 = st.tabs(["Market Rejection", "Party Rejection"])
     
