@@ -1334,7 +1334,6 @@ elif page == "🛒 Purchase Entry":
     st.markdown("### All Purchase Entries")
     st.dataframe(df_all_purchases, use_container_width=True)
     st.metric("Total Purchase Value", f"₹{df_all_purchases['amount'].sum():,.2f}")
-    
 
 # ======================= PRODUCTION ENTRY =======================
 elif page == "🏭 Production Entry":
@@ -1538,8 +1537,6 @@ elif page == "🏭 Production Entry":
 
     st.markdown("### All Production Entries")
     st.dataframe(df_all_production, use_container_width=True)
-else:
-    st.info("No production entries found")
 
 # ======================= SALES ENTRY =======================
 elif page == "💰 Sales Entry":
@@ -1820,8 +1817,6 @@ elif page == "💰 Sales Entry":
     st.markdown("### All Sales Entries")
     st.dataframe(df_all_sales, use_container_width=True)
     st.metric("Total Sales Value", f"₹{df_all_sales['amount'].sum():,.2f}")
-else:
-    st.info("No sales entries found")
 
 # ======================= PAYABLE/RECEIVABLE LEDGER =======================
 elif page == "📒 Payable/Receivable Ledger":
