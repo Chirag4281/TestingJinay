@@ -1334,8 +1334,8 @@ elif page == "🛒 Purchase Entry":
     st.markdown("### All Purchase Entries")
     st.dataframe(df_all_purchases, use_container_width=True)
     st.metric("Total Purchase Value", f"₹{df_all_purchases['amount'].sum():,.2f}")
-else:
-    st.info("No purchase entries found")
+    else:
+       st.info("No purchase entries found")
 
 # ======================= PRODUCTION ENTRY =======================
 elif page == "🏭 Production Entry":
