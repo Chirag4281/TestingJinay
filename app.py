@@ -2368,7 +2368,7 @@ elif page == "⚠️ Rejections":
 # ======================= INVENTORY =======================
 elif page == "📈 Inventory":
     st.subheader("📈 Inventory Management")
-    tab1, tab2, tab3 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory"])
+    tab1, tab2, tab3, tab4 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory", "🧮 FG to RM Calculator"])
     
     with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
@@ -2502,6 +2502,161 @@ elif page == "📈 Inventory":
         else:
             st.info("No FG inventory data available")
 
+# =================== TAB 4: FG TO RM CALCULATOR ===================
+with tab4:
+    st.markdown("### 🧮 FG to RM Material Requirement Calculator")
+    st.info("💡 Select an FG product and enter the quantity to calculate all required Raw Materials based on BOM. "
+            "This matches the logic from your 'FG TO RM QTY' Excel sheet — each FG unit multiplies with its per-unit RM requirement.")
+    
+    # Fetch FG products
+    df_fg_products = fetch_data("""
+        SELECT product_name FROM product_master 
+        WHERE category IN ('FG Product', 'Moulding Product') 
+        ORDER BY product_name
+    """)
+    fg_product_list = df_fg_products['product_name'].tolist() if not df_fg_products.empty else []
+    
+    if not fg_product_list:
+        st.warning("⚠️ No FG products found. Please add FG products in Masters first.")
+    else:
+        col_calc1, col_calc2 = st.columns([2, 1])
+        with col_calc1:
+            calc_fg_product = st.selectbox("📦 Select FG Product", fg_product_list, key="calc_fg_product")
+        with col_calc2:
+            calc_fg_qty = st.number_input("🔢 Enter FG Quantity", min_value=0.0, step=1.0, value=1.0, key="calc_fg_qty")
+        
+        if st.button("🔄 Calculate RM Requirements", type="primary", key="calc_rm_btn"):
+            if calc_fg_product and calc_fg_qty > 0:
+                # Get BOM items for this FG product
+                bom_items = fetch_data("""
+                    SELECT rm_product, required_qty 
+                    FROM bom_master 
+                    WHERE fg_product = ?
+                """, (calc_fg_product,))
+                
+                if bom_items.empty:
+                    st.warning(f"⚠️ No BOM defined for '{calc_fg_product}'. Please add BOM entries in Masters → BOM tab.")
+                else:
+                    st.markdown("---")
+                    st.markdown(f"#### 📊 RM Requirements for **{calc_fg_qty} units** of **{calc_fg_product}**")
+                    
+                    # Build calculation table
+                    calc_rows = []
+                    total_rm_value = 0.0
+                    has_shortage = False
+                    
+                    for _, bom_row in bom_items.iterrows():
+                        rm_name = bom_row['rm_product']
+                        per_unit_req = float(bom_row['required_qty'])
+                        total_required = per_unit_req * calc_fg_qty
+                        
+                        # Get current stock
+                        stock_df = fetch_data("""
+                            SELECT closing_stock, COALESCE(rate, 0) as rate 
+                            FROM rm_inventory 
+                            WHERE product_name = ?
+                        """, (rm_name,))
+                        
+                        if not stock_df.empty:
+                            available = float(stock_df['closing_stock'].iloc[0]) if pd.notna(stock_df['closing_stock'].iloc[0]) else 0.0
+                            rate = float(stock_df['rate'].iloc[0]) if pd.notna(stock_df['rate'].iloc[0]) else 0.0
+                        else:
+                            available = 0.0
+                            rate = 0.0
+                        
+                        shortage = total_required - available
+                        status = "✅ OK" if shortage <= 0 else "❌ SHORTAGE"
+                        if shortage > 0:
+                            has_shortage = True
+                        
+                        calc_rows.append({
+                            "RM Product": rm_name,
+                            "Per FG Unit": per_unit_req,
+                            f"Required ({calc_fg_qty} FG)": total_required,
+                            "Available Stock": available,
+                            "Shortage (+) / Surplus (-)": shortage,
+                            "Rate (₹)": rate,
+                            "Required Value (₹)": total_required * rate,
+                            "Status": status
+                        })
+                        total_rm_value += total_required * rate
+                    
+                    calc_df = pd.DataFrame(calc_rows)
+                    
+                    # Display summary metrics
+                    m1, m2, m3, m4 = st.columns(4)
+                    with m1:
+                        st.metric("📦 Total RM Types", len(calc_rows))
+                    with m2:
+                        st.metric("💰 Total RM Value", f"₹{total_rm_value:,.2f}")
+                    with m3:
+                        shortage_items = len([r for r in calc_rows if r["Status"] == "❌ SHORTAGE"])
+                        st.metric("⚠️ Items in Shortage", shortage_items)
+                    with m4:
+                        ok_items = len([r for r in calc_rows if r["Status"] == "✅ OK"])
+                        st.metric("✅ Items Available", ok_items)
+                    
+                    # Color the status column
+                    def highlight_status(val):
+                        if val == "❌ SHORTAGE":
+                            return 'background-color: #ffebee; color: #c62828; font-weight: bold'
+                        else:
+                            return 'background-color: #e8f5e9; color: #2e7d32; font-weight: bold'
+                    
+                    styled_df = calc_df.style.applymap(highlight_status, subset=['Status'])
+                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                    
+                    # Show overall status
+                    if has_shortage:
+                        st.error(f"⚠️ **Shortage Alert:** {shortage_items} RM material(s) are insufficient for this FG quantity. "
+                                f"Please purchase the shortage materials before proceeding.")
+                    else:
+                        st.success(f"✅ **All RM materials available!** You have sufficient stock to produce/sell {calc_fg_qty} units of {calc_fg_product}.")
+                    
+                    # Consume RM button
+                    st.markdown("---")
+                    st.markdown("#### 💾 Action: Consume RM from Stock")
+                    st.caption("Click below to actually deduct these RM quantities from your inventory (as if FG was produced/sold).")
+                    
+                    consume_col1, consume_col2 = st.columns([3, 1])
+                    with consume_col1:
+                        consume_reason = st.text_input("Reason / Reference (Challan No, Sale Ref, etc.)", 
+                                                       key="consume_reason_input",
+                                                       placeholder="e.g., SALE-001, PROD-001")
+                    with consume_col2:
+                        consume_date = st.date_input("Date", datetime.now(), key="consume_date_input")
+                    
+                    if st.button(f"💥 Consume RM Stock for {calc_fg_qty} x {calc_fg_product}", 
+                                type="primary", 
+                                key="consume_rm_stock_btn",
+                                disabled=has_shortage):
+                        if has_shortage:
+                            st.error("❌ Cannot consume — shortage exists. Please fix shortage first.")
+                        else:
+                            try:
+                                consumed_list = []
+                                ref_no = consume_reason.strip() if consume_reason.strip() else f"FG-RM-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                                
+                                for _, row_data in calc_df.iterrows():
+                                    rm_name = row_data["RM Product"]
+                                    qty_to_consume = row_data[f"Required ({calc_fg_qty} FG)"]
+                                    
+                                    update_rm_inventory(
+                                        rm_name, 
+                                        qty_to_consume, 
+                                        'CONSUMPTION', 
+                                        consume_date.strftime('%Y-%m-%d'), 
+                                        ref_no, 
+                                        rate=row_data["Rate (₹"]
+                                    )
+                                    consumed_list.append(f"{rm_name}: {qty_to_consume}")
+                                
+                                st.success(f"✅ RM stock consumed successfully for {calc_fg_qty} x {calc_fg_product}!")
+                                st.info("📋 **Consumed Items:**\n" + "\n".join([f"- {c}" for c in consumed_list]))
+                                st.balloons()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error consuming RM: {str(e)}")
 # ======================= REPORTS =======================
 elif page == "📋 Reports":
     st.subheader("📋 Reports & Analytics")
