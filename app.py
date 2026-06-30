@@ -2106,112 +2106,112 @@ elif page == "📒 Payable/Receivable Ledger":
             st.info("ℹ️ No payable records found. Payables are automatically created when you make purchases.")
 
     # =================== TAB 3: ADD MANUAL RECEIPT ===================
-with tab3:
-    st.markdown("### ➕ Add Manual Receipt / Payment")
-    entry_type = st.radio("Select Entry Type", ["Manual Payment to Supplier (Payable)", "Manual Receipt from Customer (Receivable)"], horizontal=True)
-    
-    if entry_type == "Manual Payment to Supplier (Payable)":
-        st.info("Use this to record a payment made to a supplier against an existing invoice or as an advance payment.")
-        with st.form("manual_payment_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                mp_party = st.selectbox("Supplier / Party", party_list_all if party_list_all else ["No parties added"], key="mp_party_pay")
-                
-                # Fetch unpaid payables for the selected supplier
-                if mp_party and mp_party != "No parties added":
-                    unpaid_payables = fetch_data("""
-                        SELECT id, challan_no, balance_amount, due_date 
-                        FROM payable_receivable_ledger 
-                        WHERE transaction_type = 'PAYABLE' AND party_name = ? AND payment_status != 'PAID' AND balance_amount > 0
-                        ORDER BY due_date
-                    """, (mp_party,))
-                else:
-                    unpaid_payables = pd.DataFrame()
-                
-                if not unpaid_payables.empty:
-                    pay_options = {f"{row['challan_no']} | Balance: ₹{float(row['balance_amount']):,.2f}": row['id'] for _, row in unpaid_payables.iterrows()}
-                    pay_options["New Advance Payment / Manual Entry"] = None
-                    selected_pay_label = st.selectbox("Select Invoice to Pay (or create new)", list(pay_options.keys()), key="mp_invoice_select")
-                    selected_pay_id = pay_options[selected_pay_label]
-                else:
-                    st.info(f"No unpaid invoices found for {mp_party}. A new payable entry will be created.")
-                    selected_pay_id = None
+    with tab3:
+        st.markdown("### ➕ Add Manual Receipt / Payment")
+        entry_type = st.radio("Select Entry Type", ["Manual Payment to Supplier (Payable)", "Manual Receipt from Customer (Receivable)"], horizontal=True)
+        
+        if entry_type == "Manual Payment to Supplier (Payable)":
+            st.info("Use this to record a payment made to a supplier against an existing invoice or as an advance payment.")
+            with st.form("manual_payment_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    mp_party = st.selectbox("Supplier / Party", party_list_all if party_list_all else ["No parties added"], key="mp_party_pay")
                     
-                mp_challan = st.text_input("Reference / Challan No (Optional)", key="mp_challan_pay")
-                mp_date = st.date_input("Date", datetime.now(), key="mp_date_pay")
-                
-            with col2:
-                if selected_pay_id and not unpaid_payables.empty:
-                    current_bal = float(unpaid_payables[unpaid_payables['id'] == selected_pay_id]['balance_amount'].iloc[0])
-                    mp_amount = st.number_input("Payment Amount (₹)", min_value=0.01, max_value=current_bal, value=current_bal, step=0.01, key="mp_amount_pay")
-                else:
-                    mp_amount = st.number_input("Payment Amount (₹)", min_value=0.01, step=0.01, key="mp_amount_pay")
-                    
-                mp_remarks = st.text_area("Remarks", key="mp_remarks_pay")
-                
-            if st.form_submit_button("💸 Record Payment to Supplier", type="primary"):
-                if mp_party and mp_party != "No parties added" and mp_amount > 0:
-                    ref_no = mp_challan.strip() if mp_challan.strip() else f"MANUAL-PAY-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    
-                    if selected_pay_id:
-                        # Update existing payable invoice
-                        current = fetch_data("SELECT paid_amount, balance_amount, amount, payment_status FROM payable_receivable_ledger WHERE id = ?", (selected_pay_id,))
-                        if not current.empty:
-                            record = current.iloc[0]
-                            new_paid = float(record['paid_amount']) + float(mp_amount)
-                            new_balance = float(record['balance_amount']) - float(mp_amount)
-                            
-                            if new_balance <= 0.01:
-                                new_status = 'PAID'
-                                new_balance = 0
-                            elif new_paid > 0:
-                                new_status = 'PARTIAL'
-                            else:
-                                new_status = 'PENDING'
-                                
-                            execute_query("""
-                                UPDATE payable_receivable_ledger
-                                SET paid_amount = ?, balance_amount = ?, payment_status = ?, remarks = ?
-                                WHERE id = ?
-                            """, (new_paid, new_balance, new_status, f"Manual payment of ₹{mp_amount:,.2f} on {datetime.now().strftime('%Y-%m-%d')}. {mp_remarks}", selected_pay_id))
-                            st.success(f"✅ Payment of ₹{mp_amount:,.2f} recorded! Balance updated in real-time.")
+                    # Fetch unpaid payables for the selected supplier
+                    if mp_party and mp_party != "No parties added":
+                        unpaid_payables = fetch_data("""
+                            SELECT id, challan_no, balance_amount, due_date 
+                            FROM payable_receivable_ledger 
+                            WHERE transaction_type = 'PAYABLE' AND party_name = ? AND payment_status != 'PAID' AND balance_amount > 0
+                            ORDER BY due_date
+                        """, (mp_party,))
                     else:
-                        # Create new manual payable entry (already paid)
+                        unpaid_payables = pd.DataFrame()
+                    
+                    if not unpaid_payables.empty:
+                        pay_options = {f"{row['challan_no']} | Balance: ₹{float(row['balance_amount']):,.2f}": row['id'] for _, row in unpaid_payables.iterrows()}
+                        pay_options["New Advance Payment / Manual Entry"] = None
+                        selected_pay_label = st.selectbox("Select Invoice to Pay (or create new)", list(pay_options.keys()), key="mp_invoice_select")
+                        selected_pay_id = pay_options[selected_pay_label]
+                    else:
+                        st.info(f"No unpaid invoices found for {mp_party}. A new payable entry will be created.")
+                        selected_pay_id = None
+                        
+                    mp_challan = st.text_input("Reference / Challan No (Optional)", key="mp_challan_pay")
+                    mp_date = st.date_input("Date", datetime.now(), key="mp_date_pay")
+                    
+                with col2:
+                    if selected_pay_id and not unpaid_payables.empty:
+                        current_bal = float(unpaid_payables[unpaid_payables['id'] == selected_pay_id]['balance_amount'].iloc[0])
+                        mp_amount = st.number_input("Payment Amount (₹)", min_value=0.01, max_value=current_bal, value=current_bal, step=0.01, key="mp_amount_pay")
+                    else:
+                        mp_amount = st.number_input("Payment Amount (₹)", min_value=0.01, step=0.01, key="mp_amount_pay")
+                        
+                    mp_remarks = st.text_area("Remarks", key="mp_remarks_pay")
+                    
+                if st.form_submit_button("💸 Record Payment to Supplier", type="primary"):
+                    if mp_party and mp_party != "No parties added" and mp_amount > 0:
+                        ref_no = mp_challan.strip() if mp_challan.strip() else f"MANUAL-PAY-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        
+                        if selected_pay_id:
+                            # Update existing payable invoice
+                            current = fetch_data("SELECT paid_amount, balance_amount, amount, payment_status FROM payable_receivable_ledger WHERE id = ?", (selected_pay_id,))
+                            if not current.empty:
+                                record = current.iloc[0]
+                                new_paid = float(record['paid_amount']) + float(mp_amount)
+                                new_balance = float(record['balance_amount']) - float(mp_amount)
+                                
+                                if new_balance <= 0.01:
+                                    new_status = 'PAID'
+                                    new_balance = 0
+                                elif new_paid > 0:
+                                    new_status = 'PARTIAL'
+                                else:
+                                    new_status = 'PENDING'
+                                    
+                                execute_query("""
+                                    UPDATE payable_receivable_ledger
+                                    SET paid_amount = ?, balance_amount = ?, payment_status = ?, remarks = ?
+                                    WHERE id = ?
+                                """, (new_paid, new_balance, new_status, f"Manual payment of ₹{mp_amount:,.2f} on {datetime.now().strftime('%Y-%m-%d')}. {mp_remarks}", selected_pay_id))
+                                st.success(f"✅ Payment of ₹{mp_amount:,.2f} recorded! Balance updated in real-time.")
+                        else:
+                            # Create new manual payable entry (already paid)
+                            execute_query("""
+                                INSERT INTO payable_receivable_ledger
+                                (transaction_type, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, ('PAYABLE', mp_party, ref_no, mp_date.strftime('%Y-%m-%d'), mp_date.strftime('%Y-%m-%d'),
+                                  mp_amount, mp_amount, 0, 'PAID', mp_remarks or 'Manual payment entry'))
+                            st.success(f"✅ Manual payment of ₹{mp_amount:,.2f} added for {mp_party}!")
+                        st.balloons()
+                        st.rerun()
+                        
+        else:
+            # =================== MANUAL RECEIPT (CUSTOMER) ===================
+            st.info("Use this to record a payment received from a customer that isn't tied to an existing invoice (e.g., advance payment, manual receipt).")
+            with st.form("manual_receipt_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    mr_party = st.selectbox("Customer / Party", party_list_all if party_list_all else ["No parties added"], key="mr_party_recv")
+                    mr_challan = st.text_input("Reference / Challan No (Optional)", key="mr_challan_recv")
+                    mr_date = st.date_input("Date", datetime.now(), key="mr_date_recv")
+                with col2:
+                    mr_amount = st.number_input("Amount Received (₹)", min_value=0.01, step=0.01, key="mr_amount_recv")
+                    mr_remarks = st.text_area("Remarks", key="mr_remarks_recv")
+                    
+                if st.form_submit_button("💵 Add Receipt Entry", type="primary"):
+                    if mr_party and mr_party != "No parties added" and mr_amount > 0:
+                        ref_no = mr_challan.strip() if mr_challan.strip() else f"MANUAL-RCV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                         execute_query("""
                             INSERT INTO payable_receivable_ledger
                             (transaction_type, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, ('PAYABLE', mp_party, ref_no, mp_date.strftime('%Y-%m-%d'), mp_date.strftime('%Y-%m-%d'),
-                              mp_amount, mp_amount, 0, 'PAID', mp_remarks or 'Manual payment entry'))
-                        st.success(f"✅ Manual payment of ₹{mp_amount:,.2f} added for {mp_party}!")
-                    st.balloons()
-                    st.rerun()
-                    
-    else:
-        # =================== MANUAL RECEIPT (CUSTOMER) ===================
-        st.info("Use this to record a payment received from a customer that isn't tied to an existing invoice (e.g., advance payment, manual receipt).")
-        with st.form("manual_receipt_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                mr_party = st.selectbox("Customer / Party", party_list_all if party_list_all else ["No parties added"], key="mr_party_recv")
-                mr_challan = st.text_input("Reference / Challan No (Optional)", key="mr_challan_recv")
-                mr_date = st.date_input("Date", datetime.now(), key="mr_date_recv")
-            with col2:
-                mr_amount = st.number_input("Amount Received (₹)", min_value=0.01, step=0.01, key="mr_amount_recv")
-                mr_remarks = st.text_area("Remarks", key="mr_remarks_recv")
-                
-            if st.form_submit_button("💵 Add Receipt Entry", type="primary"):
-                if mr_party and mr_party != "No parties added" and mr_amount > 0:
-                    ref_no = mr_challan.strip() if mr_challan.strip() else f"MANUAL-RCV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    execute_query("""
-                        INSERT INTO payable_receivable_ledger
-                        (transaction_type, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, ('RECEIVABLE', mr_party, ref_no, mr_date.strftime('%Y-%m-%d'), mr_date.strftime('%Y-%m-%d'),
-                          mr_amount, mr_amount, 0, 'PAID', mr_remarks or 'Manual receipt entry'))
-                    st.success(f"✅ Manual receipt of ₹{mr_amount:,.2f} added for {mr_party}!")
-                    st.balloons()
-                    st.rerun()
+                        """, ('RECEIVABLE', mr_party, ref_no, mr_date.strftime('%Y-%m-%d'), mr_date.strftime('%Y-%m-%d'),
+                              mr_amount, mr_amount, 0, 'PAID', mr_remarks or 'Manual receipt entry'))
+                        st.success(f"✅ Manual receipt of ₹{mr_amount:,.2f} added for {mr_party}!")
+                        st.balloons()
+                        st.rerun()
 elif page == "⚠️ Rejections":
     st.subheader("⚠️ Rejection Management")
     tab1, tab2 = st.tabs(["Market Rejection", "Party Rejection"])
