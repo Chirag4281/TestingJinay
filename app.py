@@ -991,40 +991,114 @@ elif page == "📦 Masters":
         st.markdown("### 🔧 BOM (Bill of Materials) Management")
         st.info("Define RM materials required for each FG product. When FG is sold, RM will be auto-consumed.")
         
-        # =================== NEW: BOM IMPORT FEATURE ===================
-        st.markdown("#### 📥 Import BOM from Excel")
-        st.caption("Upload your BOM Excel file (First column = FG Products, First row = RM Products, Values = Required Qty).")
-        bom_file = st.file_uploader("Choose BOM Excel file", type=['xlsx', 'xls'], key="bom_file_uploader")
-        if bom_file is not None:
-            if st.button("Import BOM Data", type="primary", key="import_bom_btn"):
-                with st.spinner("Importing BOM data..."):
-                    try:
-                        df_bom_import = pd.read_excel(bom_file, sheet_name=0)
-                        fg_col = df_bom_import.columns[0]
-                        rm_cols = df_bom_import.columns[1:]
-                        
-                        records = 0
-                        for idx, row in df_bom_import.iterrows():
-                            fg_product = str(row[fg_col]).strip()
-                            if not fg_product or fg_product.upper() in ['NAN', 'RAW MATERIAL NAME', 'FG PRODUCT NAME', '']:
-                                continue
-                            
-                            for rm_col in rm_cols:
-                                qty = row[rm_col]
-                                if pd.notna(qty) and isinstance(qty, (int, float)) and qty > 0:
-                                    rm_product = str(rm_col).strip()
-                                    if rm_product and rm_product.upper() not in ['NAN', 'RM QTY', '']:
-                                        execute_query("INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)",
-                                                      (fg_product, rm_product, float(qty)))
-                                        records += 1
-                        st.success(f"✅ Successfully imported {records} BOM entries! RM will now auto-consume on FG sales.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error importing BOM: {str(e)}")
+        # =================== HARDCODED BOM DATA ===================
+        # This data is from your FG TO RM QTY.xlsx file
+        BOM_DATA = {
+            "5A SSC with JB": {
+                "5A STC": 1, "5A DTC": 1, "5A W/S": 2, "5A C/C": 1,
+                "5A Action": 1, "5A Earting Pin": 1, "5A Live Pin": 1,
+                "5A Threading Patti": 2, "5/15A Bulb": 1,
+            },
+            "5A 8x1 with JB": {
+                "5A STC": 2, "5A DTC": 2, "5A W/S": 4, "5A C/C": 2,
+                "5A Action": 2, "5A Earting Pin": 2, "5A Live Pin": 2,
+                "5A Threading Patti": 4, "5/15A Bulb": 2,
+            },
+            "5A 10x1 with JB": {
+                "5A STC": 2, "5A DTC": 2, "5A W/S": 4, "5A C/C": 2,
+                "5A Action": 2, "5A Earting Pin": 2, "5A Live Pin": 2,
+                "5A Threading Patti": 4, "5/15A Bulb": 2, "5A 2 Pin": 2,
+            },
+            "15A SSC with JB": {
+                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
+                "15A Earting Pin": 1, "15A Live Pin": 2,
+                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
+            },
+            "15A SSC Consil": {
+                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
+                "15A Earting Pin": 1, "15A Live Pin": 2,
+                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
+            },
+            "15A SSC with Jb IND": {
+                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
+                "15A Earting Pin": 1, "15A Live Pin": 2,
+                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
+                "DSSC Spike 1 mt": 1,
+            },
+            "15A SSC IND Consil": {
+                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
+                "15A Earting Pin": 1, "15A Live Pin": 2,
+                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
+                "DSSC Spike 1 mt": 1,
+            },
+            "15A SSC MCB": {
+                "15A Earting Pin": 1, "15A Live Pin": 2,
+            },
+            "15A DSSC with JB": {
+                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
+                "15A Earting Pin": 2, "15A Live Pin": 4,
+                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
+                "DSSC Spike 1 mt": 2,
+            },
+            "15A DSSC With JB (Brass)": {
+                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
+                "15A Earting Pin": 2, "15A Live Pin": 4,
+                "15A Action 21+5 Brass": 2, "15A MS Action": 2,
+                "15A Threading Patti": 2, "DSSC Spike 1 mt": 2,
+            },
+            "15A DSSC Spike 3mt": {
+                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
+                "15A Earting Pin": 2, "15A Live Pin": 4,
+                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
+                "DSSC Spike 1 mt": 2, "DSSC Spike 3 mt": 1,
+            },
+            "15A DSSC Spike 5 mt": {
+                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
+                "15A Earting Pin": 2, "15A Live Pin": 4,
+                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
+                "DSSC Spike 1 mt": 2, "DSSC Spike 5 mt": 1,
+            },
+            "15A DSSC 1Mt Connector": {
+                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
+                "15A Earting Pin": 2, "15A Live Pin": 4,
+                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
+                "DSSC Spike 1 mt": 2, "Kitkat Part Set": 1,
+            },
+            "TSSC": {
+                "15A STC": 3, "15A DTC": 3, "15A W/S": 6, "15A C/C": 3,
+                "15A Earting Pin": 3, "15A Live Pin": 6,
+                "15A Action 21+5 Brass": 3, "15A Threading Patti": 3,
+                "DSSC Spike 1 mt": 3,
+            },
+            "5X1 with JB": {
+                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
+                "15A Earting Pin": 1, "15A Live Pin": 2,
+                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
+                "5A STC": 2, "5A DTC": 2, "DSSC Spike 1 mt": 1, "DSSC Spike 3 mt": 1,
+            },
+            "5x1 Consil": {
+                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
+                "15A Earting Pin": 1, "15A Live Pin": 2,
+                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
+                "5A STC": 2, "5A DTC": 2, "DSSC Spike 1 mt": 1, "DSSC Spike 3 mt": 1,
+            },
+        }
+        
+        # Auto-populate BOM on first run
+        if 'bom_initialized' not in st.session_state:
+            existing_bom = fetch_data("SELECT COUNT(*) as count FROM bom_master")
+            if existing_bom.empty or existing_bom['count'].iloc[0] == 0:
+                records = 0
+                for fg_product, rm_dict in BOM_DATA.items():
+                    for rm_product, qty in rm_dict.items():
+                        execute_query("INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)",
+                                      (fg_product, rm_product, float(qty)))
+                        records += 1
+                if records > 0:
+                    st.success(f"✅ Auto-populated {records} BOM entries from template data!")
+            st.session_state.bom_initialized = True
         
         st.markdown("---")
-        # =================== END BOM IMPORT ===================
-        
         st.markdown("#### Add BOM Entry Manually")
         col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
         with col1:
@@ -1069,8 +1143,7 @@ elif page == "📦 Masters":
                 st.success("✅ BOM entry deleted!")
                 st.rerun()
         else:
-            st.info("No BOM entries defined yet. Please import or add manually above.")
-# ======================= PURCHASE ENTRY =======================
+            st.info("No BOM entries defined yet. Please add manually above.")# ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
     st.subheader("🛒 Purchase Entry")
     if 'pur_party_filter' not in st.session_state:
