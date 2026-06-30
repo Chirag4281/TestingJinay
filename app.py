@@ -2512,14 +2512,15 @@ elif page == "📈 Inventory":
         st.info("💡 This section automatically calculates RM requirements based on actual FG product sales. "
                 "When you sell FG products, the required RM materials are calculated using the BOM (same logic as your Excel sheet).")
         
-        # Fetch all FG sales
+        # Fetch all FG sales with FULL DETAILS
         df_fg_sales = fetch_data("""
-            SELECT st.product_name, SUM(st.qty) as total_sold_qty
+            SELECT st.id, st.challan_no, st.date, st.party_name, st.product_name, 
+                   st.category, st.product_category, st.qty, st.unit, st.rate, st.amount,
+                   st.payment_terms_days, st.due_date
             FROM sales_transactions st
             JOIN product_master pm ON st.product_name = pm.product_name
             WHERE pm.category IN ('FG Product', 'Moulding Product')
-            GROUP BY st.product_name
-            ORDER BY total_sold_qty DESC
+            ORDER BY st.date DESC, st.id DESC
         """)
         
         if df_fg_sales.empty:
@@ -2529,14 +2530,15 @@ elif page == "📈 Inventory":
             sales_rm_requirements = {}
             total_sales_value = 0.0
             
+            # Group sales by FG product for RM calculation
             for _, sale_row in df_fg_sales.iterrows():
                 fg_product = sale_row['product_name']
-                fg_qty_sold = float(sale_row['total_sold_qty'])
+                fg_qty_sold = float(sale_row['qty'])
                 
                 # Get BOM for this FG product
                 bom_items = fetch_data("""
-                    SELECT rm_product, required_qty 
-                    FROM bom_master 
+                    SELECT rm_product, required_qty
+                    FROM bom_master
                     WHERE fg_product = ?
                 """, (fg_product,))
                 
@@ -2554,8 +2556,15 @@ elif page == "📈 Inventory":
                         
                         sales_rm_requirements[rm_name]['total_required'] += rm_total_needed
                         sales_rm_requirements[rm_name]['breakdown'].append({
+                            'sale_id': sale_row['id'],
+                            'challan_no': sale_row['challan_no'],
+                            'date': sale_row['date'],
+                            'party_name': sale_row['party_name'],
                             'fg_product': fg_product,
                             'fg_qty_sold': fg_qty_sold,
+                            'unit': sale_row['unit'],
+                            'rate': sale_row['rate'],
+                            'amount': sale_row['amount'],
                             'rm_per_unit': rm_per_unit,
                             'rm_needed': rm_total_needed
                         })
@@ -2570,8 +2579,8 @@ elif page == "📈 Inventory":
                     
                     # Get current stock
                     stock_df = fetch_data("""
-                        SELECT closing_stock, COALESCE(rate, 0) as rate 
-                        FROM rm_inventory 
+                        SELECT closing_stock, COALESCE(rate, 0) as rate
+                        FROM rm_inventory
                         WHERE product_name = ?
                     """, (rm_name,))
                     
@@ -2587,11 +2596,8 @@ elif page == "📈 Inventory":
                     if shortage > 0:
                         has_shortage = True
                     
-                    # Create breakdown string
-                    breakdown_str = "; ".join([
-                        f"{b['fg_product']}: {b['fg_qty_sold']:.0f}×{b['rm_per_unit']:.2f}={b['rm_needed']:.2f}"
-                        for b in rm_data['breakdown']
-                    ])
+                    # Count unique sales transactions for this RM
+                    unique_sales = len(set([b['sale_id'] for b in rm_data['breakdown']]))
                     
                     sales_calc_rows.append({
                         "RM Product": rm_name,
@@ -2601,7 +2607,7 @@ elif page == "📈 Inventory":
                         "Rate (₹)": rate,
                         "Required Value (₹)": total_required * rate,
                         "Status": status,
-                        "Breakdown (FG×RM_per_unit=Total)": breakdown_str
+                        "No. of Sales Transactions": unique_sales
                     })
                     total_sales_value += total_required * rate
                 
@@ -2610,7 +2616,7 @@ elif page == "📈 Inventory":
                 # Display summary metrics
                 m1, m2, m3, m4 = st.columns(4)
                 with m1:
-                    st.metric("📦 FG Products Sold", len(df_fg_sales))
+                    st.metric("📦 Total FG Sales", len(df_fg_sales))
                 with m2:
                     st.metric("🔧 RM Types Required", len(sales_calc_rows))
                 with m3:
@@ -2640,12 +2646,70 @@ elif page == "📈 Inventory":
                 else:
                     st.success(f"✅ **All RM materials available!** You have sufficient stock for all FG sales.")
                 
-                # Show detailed FG sales breakdown
-                with st.expander("📋 View Detailed FG Sales Breakdown"):
-                    st.markdown("**FG Products Sold:**")
-                    display_sales = df_fg_sales.copy()
-                    display_sales.columns = ['FG Product', 'Total Sold Qty']
-                    st.dataframe(display_sales, use_container_width=True)
+                # =================== NEW: DETAILED SALES TRANSACTIONS TABLE ===================
+                st.markdown("---")
+                st.markdown("#### 📋 Detailed Sales Transactions (FG Products)")
+                st.caption("Complete details of all FG product sales with challan numbers, dates, contractor names, and quantities")
+                
+                # Prepare detailed sales display
+                detailed_sales = df_fg_sales.copy()
+                detailed_sales = detailed_sales.rename(columns={
+                    'id': 'Sale ID',
+                    'challan_no': 'Challan No',
+                    'date': 'Date',
+                    'party_name': 'Contractor / Party',
+                    'product_name': 'FG Product',
+                    'category': 'Entry Category',
+                    'product_category': 'Product Category',
+                    'qty': 'Quantity',
+                    'unit': 'Unit',
+                    'rate': 'Rate (₹)',
+                    'amount': 'Amount (₹)',
+                    'payment_terms_days': 'Payment Days',
+                    'due_date': 'Due Date'
+                })
+                
+                # Display full sales table
+                st.dataframe(detailed_sales, use_container_width=True, hide_index=True)
+                
+                # Show summary by contractor
+                st.markdown("#### 👥 Sales Summary by Contractor/Party")
+                contractor_summary = df_fg_sales.groupby('party_name').agg({
+                    'qty': 'sum',
+                    'amount': 'sum',
+                    'id': 'count'
+                }).reset_index()
+                contractor_summary.columns = ['Contractor / Party', 'Total FG Qty Sold', 'Total Sales Value (₹)', 'No. of Transactions']
+                contractor_summary = contractor_summary.sort_values('Total Sales Value (₹)', ascending=False)
+                st.dataframe(contractor_summary, use_container_width=True, hide_index=True)
+                
+                # Show detailed FG sales breakdown for each RM
+                with st.expander("🔍 View Detailed RM Breakdown by Sale Transaction"):
+                    st.markdown("**RM Requirements Breakdown:**")
+                    st.caption("Shows which sale transactions contributed to each RM requirement")
+                    
+                    for rm_name, rm_data in sales_rm_requirements.items():
+                        st.markdown(f"##### 🔧 {rm_name}")
+                        
+                        # Create breakdown dataframe for this RM
+                        rm_breakdown_rows = []
+                        for b in rm_data['breakdown']:
+                            rm_breakdown_rows.append({
+                                "Sale ID": b['sale_id'],
+                                "Challan No": b['challan_no'],
+                                "Date": b['date'],
+                                "Contractor / Party": b['party_name'],
+                                "FG Product": b['fg_product'],
+                                "FG Qty Sold": f"{b['fg_qty_sold']:.2f} {b['unit']}",
+                                "RM per FG Unit": f"{b['rm_per_unit']:.2f}",
+                                "RM Required": f"{b['rm_needed']:.2f}",
+                                "Sale Amount (₹)": f"₹{b['amount']:,.2f}"
+                            })
+                        
+                        rm_breakdown_df = pd.DataFrame(rm_breakdown_rows)
+                        st.dataframe(rm_breakdown_df, use_container_width=True, hide_index=True)
+                        st.markdown(f"**Total RM Required: {rm_data['total_required']:.2f}**")
+                        st.markdown("---")
                 
                 # Consume RM button for sales-based calculation
                 st.markdown("---")
