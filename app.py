@@ -987,89 +987,89 @@ elif page == "📦 Masters":
                             st.session_state.edit_id = None
                             st.rerun()
 
-with tab3:
-    st.markdown("### 🔧 BOM (Bill of Materials) Management")
-    st.info("Define RM materials required for each FG product. When FG is sold, RM will be auto-consumed.")
-    
-    # =================== NEW: BOM IMPORT FEATURE ===================
-    st.markdown("#### 📥 Import BOM from Excel")
-    st.caption("Upload your BOM Excel file (First column = FG Products, First row = RM Products, Values = Required Qty).")
-    bom_file = st.file_uploader("Choose BOM Excel file", type=['xlsx', 'xls'], key="bom_file_uploader")
-    if bom_file is not None:
-        if st.button("Import BOM Data", type="primary", key="import_bom_btn"):
-            with st.spinner("Importing BOM data..."):
-                try:
-                    df_bom_import = pd.read_excel(bom_file, sheet_name=0)
-                    fg_col = df_bom_import.columns[0]
-                    rm_cols = df_bom_import.columns[1:]
-                    
-                    records = 0
-                    for idx, row in df_bom_import.iterrows():
-                        fg_product = str(row[fg_col]).strip()
-                        if not fg_product or fg_product.upper() in ['NAN', 'RAW MATERIAL NAME', 'FG PRODUCT NAME', '']:
-                            continue
+    with tab3:
+        st.markdown("### 🔧 BOM (Bill of Materials) Management")
+        st.info("Define RM materials required for each FG product. When FG is sold, RM will be auto-consumed.")
+        
+        # =================== NEW: BOM IMPORT FEATURE ===================
+        st.markdown("#### 📥 Import BOM from Excel")
+        st.caption("Upload your BOM Excel file (First column = FG Products, First row = RM Products, Values = Required Qty).")
+        bom_file = st.file_uploader("Choose BOM Excel file", type=['xlsx', 'xls'], key="bom_file_uploader")
+        if bom_file is not None:
+            if st.button("Import BOM Data", type="primary", key="import_bom_btn"):
+                with st.spinner("Importing BOM data..."):
+                    try:
+                        df_bom_import = pd.read_excel(bom_file, sheet_name=0)
+                        fg_col = df_bom_import.columns[0]
+                        rm_cols = df_bom_import.columns[1:]
                         
-                        for rm_col in rm_cols:
-                            qty = row[rm_col]
-                            if pd.notna(qty) and isinstance(qty, (int, float)) and qty > 0:
-                                rm_product = str(rm_col).strip()
-                                if rm_product and rm_product.upper() not in ['NAN', 'RM QTY', '']:
-                                    execute_query("INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)",
-                                                  (fg_product, rm_product, float(qty)))
-                                    records += 1
-                    st.success(f"✅ Successfully imported {records} BOM entries! RM will now auto-consume on FG sales.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error importing BOM: {str(e)}")
+                        records = 0
+                        for idx, row in df_bom_import.iterrows():
+                            fg_product = str(row[fg_col]).strip()
+                            if not fg_product or fg_product.upper() in ['NAN', 'RAW MATERIAL NAME', 'FG PRODUCT NAME', '']:
+                                continue
+                            
+                            for rm_col in rm_cols:
+                                qty = row[rm_col]
+                                if pd.notna(qty) and isinstance(qty, (int, float)) and qty > 0:
+                                    rm_product = str(rm_col).strip()
+                                    if rm_product and rm_product.upper() not in ['NAN', 'RM QTY', '']:
+                                        execute_query("INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)",
+                                                      (fg_product, rm_product, float(qty)))
+                                        records += 1
+                        st.success(f"✅ Successfully imported {records} BOM entries! RM will now auto-consume on FG sales.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error importing BOM: {str(e)}")
+        
+        st.markdown("---")
+        # =================== END BOM IMPORT ===================
+        
+        st.markdown("#### Add BOM Entry Manually")
+        col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+        with col1:
+            df_fg = fetch_data("SELECT product_name FROM product_master WHERE category IN ('FG Product', 'Moulding Product') ORDER BY product_name")
+            fg_list = df_fg['product_name'].tolist() if not df_fg.empty else []
+            bom_fg_product = st.selectbox("FG Product", fg_list if fg_list else ["No FG products"], key="bom_fg_select")
+        with col2:
+            bom_cat_filter = st.selectbox("Filter RM By Category", ["RM Product", "All"], key="bom_rm_cat_filter")
+            if bom_cat_filter == "RM Product":
+                df_rm = fetch_data("SELECT product_name FROM product_master WHERE category = 'RM Product' ORDER BY product_name")
+            else:
+                df_rm = fetch_data("SELECT product_name FROM product_master ORDER BY product_name")
+            rm_list = df_rm['product_name'].tolist() if not df_rm.empty else []
+            bom_rm_product = st.selectbox("RM Material", rm_list if rm_list else ["No RM products"], key="bom_rm_select")
+        with col3:
+            bom_qty = st.number_input("Req Qty", min_value=0.001, step=0.001, value=1.0, key="bom_qty_input")
+        with col4:
+            if st.button("Add BOM", type="primary", key="add_bom_btn"):
+                if bom_fg_product != "No FG products" and bom_rm_product != "No RM products":
+                    try:
+                        execute_query('''INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)''',
+                                      (bom_fg_product, bom_rm_product, bom_qty))
+                        st.success(f"✅ BOM updated: {bom_fg_product} requires {bom_qty} x {bom_rm_product}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
     
-    st.markdown("---")
-    # =================== END BOM IMPORT ===================
-    
-    st.markdown("#### Add BOM Entry Manually")
-    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
-    with col1:
-        df_fg = fetch_data("SELECT product_name FROM product_master WHERE category IN ('FG Product', 'Moulding Product') ORDER BY product_name")
-        fg_list = df_fg['product_name'].tolist() if not df_fg.empty else []
-        bom_fg_product = st.selectbox("FG Product", fg_list if fg_list else ["No FG products"], key="bom_fg_select")
-    with col2:
-        bom_cat_filter = st.selectbox("Filter RM By Category", ["RM Product", "All"], key="bom_rm_cat_filter")
-        if bom_cat_filter == "RM Product":
-            df_rm = fetch_data("SELECT product_name FROM product_master WHERE category = 'RM Product' ORDER BY product_name")
+        st.markdown("#### BOM List")
+        df_bom = fetch_data("""
+            SELECT b.fg_product, b.rm_product, b.required_qty, p.unit as rm_unit, p.category as rm_category
+            FROM bom_master b LEFT JOIN product_master p ON b.rm_product = p.product_name
+            ORDER BY b.fg_product, b.rm_product
+        """)
+        if not df_bom.empty:
+            st.dataframe(df_bom, use_container_width=True)
+            st.markdown("#### Delete BOM Entry")
+            bom_to_delete = st.selectbox("Select BOM to Delete",
+                [f"{row['fg_product']} - {row['rm_product']}" for _, row in df_bom.iterrows()], key="delete_bom_select")
+            if st.button("Delete BOM Entry", key="delete_bom_btn"):
+                fg, rm = bom_to_delete.split(" - ")
+                execute_query("DELETE FROM bom_master WHERE fg_product = ? AND rm_product = ?", (fg, rm))
+                st.success("✅ BOM entry deleted!")
+                st.rerun()
         else:
-            df_rm = fetch_data("SELECT product_name FROM product_master ORDER BY product_name")
-        rm_list = df_rm['product_name'].tolist() if not df_rm.empty else []
-        bom_rm_product = st.selectbox("RM Material", rm_list if rm_list else ["No RM products"], key="bom_rm_select")
-    with col3:
-        bom_qty = st.number_input("Req Qty", min_value=0.001, step=0.001, value=1.0, key="bom_qty_input")
-    with col4:
-        if st.button("Add BOM", type="primary", key="add_bom_btn"):
-            if bom_fg_product != "No FG products" and bom_rm_product != "No RM products":
-                try:
-                    execute_query('''INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)''',
-                                  (bom_fg_product, bom_rm_product, bom_qty))
-                    st.success(f"✅ BOM updated: {bom_fg_product} requires {bom_qty} x {bom_rm_product}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
-
-    st.markdown("#### BOM List")
-    df_bom = fetch_data("""
-        SELECT b.fg_product, b.rm_product, b.required_qty, p.unit as rm_unit, p.category as rm_category
-        FROM bom_master b LEFT JOIN product_master p ON b.rm_product = p.product_name
-        ORDER BY b.fg_product, b.rm_product
-    """)
-    if not df_bom.empty:
-        st.dataframe(df_bom, use_container_width=True)
-        st.markdown("#### Delete BOM Entry")
-        bom_to_delete = st.selectbox("Select BOM to Delete",
-            [f"{row['fg_product']} - {row['rm_product']}" for _, row in df_bom.iterrows()], key="delete_bom_select")
-        if st.button("Delete BOM Entry", key="delete_bom_btn"):
-            fg, rm = bom_to_delete.split(" - ")
-            execute_query("DELETE FROM bom_master WHERE fg_product = ? AND rm_product = ?", (fg, rm))
-            st.success("✅ BOM entry deleted!")
-            st.rerun()
-    else:
-        st.info("No BOM entries defined yet. Please import or add manually above.")
+            st.info("No BOM entries defined yet. Please import or add manually above.")
 # ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
     st.subheader("🛒 Purchase Entry")
