@@ -2646,11 +2646,6 @@ elif page == "📈 Inventory":
                     sales_calc_rows.append({
                         "RM Product": rm_name,
                         "Total Required (All Sales)": total_required,
-                        "Available Stock": available,
-                        "Shortage (+) / Surplus (-)": shortage,
-                        "Rate (₹)": rate,
-                        "Required Value (₹)": total_required * rate,
-                        "Status": status,
                         "No. of Sales Transactions": unique_sales
                     })
                     total_sales_value += total_required * rate
