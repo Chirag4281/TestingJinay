@@ -2684,8 +2684,9 @@ elif page == "📈 Inventory":
                 
                 # Show overall status
                 if has_shortage:
-                    st.error(f"⚠️ **Shortage Alert:** {shortage_items} RM material(s) are insufficient for current sales. "
-                             f"Please purchase the shortage materials.")
+                    pass
+                    #st.error(f"⚠️ **Shortage Alert:** {shortage_items} RM material(s) are insufficient for current sales. "
+                    #         f"Please purchase the shortage materials.")
                 else:
                     st.success(f"✅ **All RM materials available!** You have sufficient stock for all FG sales.")                        
                 # =================== NEW: DETAILED SALES TRANSACTIONS TABLE ===================
