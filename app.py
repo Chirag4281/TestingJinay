@@ -1087,7 +1087,7 @@ elif page == "📦 Masters":
 
         st.markdown("---")
         st.markdown("#### ➕ Add New BOM Entry Manually")
-        col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+        col1, col2 = st.columns(2)
         with col1:
             df_fg = fetch_data("SELECT product_name FROM product_master WHERE category IN ('FG Product', 'Moulding Product') ORDER BY product_name")
             fg_list = df_fg['product_name'].tolist() if not df_fg.empty else []
@@ -1100,18 +1100,43 @@ elif page == "📦 Masters":
                 df_rm = fetch_data("SELECT product_name FROM product_master ORDER BY product_name")
             rm_list = df_rm['product_name'].tolist() if not df_rm.empty else []
             bom_rm_product = st.selectbox("RM Material", rm_list if rm_list else ["No RM products"], key="bom_rm_select_new")
-        with col3:
-            bom_qty = st.number_input("Req Qty", min_value=0.001, step=0.001, value=1.0, key="bom_qty_input_new")
-        with col4:
-            if st.button("Add BOM", type="primary", key="add_bom_btn_new"):
-                if bom_fg_product != "No FG products" and bom_rm_product != "No RM products":
-                    try:
-                        execute_query('''INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)''', (bom_fg_product, bom_rm_product, bom_qty))
-                        st.success(f"✅ BOM added: {bom_fg_product} requires {bom_qty} x {bom_rm_product}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
-
+        
+        st.markdown("**Adjust Quantity (Click ➕ or ➖)**")
+        # Initialize session state for new BOM quantity
+        if 'new_bom_qty' not in st.session_state:
+            st.session_state.new_bom_qty = 1.0
+        
+        col_m1, col_m2, col_m3 = st.columns([1, 2, 1])
+        with col_m1:
+            if st.button("➖", key="new_bom_minus_btn", help="Decrease by 1"):
+                st.session_state.new_bom_qty = max(0.001, st.session_state.new_bom_qty - 1.0)
+                st.rerun()
+        with col_m2:
+            typed_qty = st.number_input(
+                "Req Qty", 
+                min_value=0.001, 
+                step=1.0, 
+                value=float(st.session_state.new_bom_qty), 
+                key="new_bom_qty_manual_input"
+            )
+            # Sync manual typing back to state
+            if typed_qty != st.session_state.new_bom_qty:
+                st.session_state.new_bom_qty = typed_qty
+        with col_m3:
+            if st.button("➕", key="new_bom_plus_btn", help="Increase by 1"):
+                st.session_state.new_bom_qty = st.session_state.new_bom_qty + 1.0
+                st.rerun()
+        
+        if st.button("💾 Add BOM", type="primary", key="add_bom_btn_new"):
+            if bom_fg_product != "No FG products" and bom_rm_product != "No RM products":
+                try:
+                    execute_query('''INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)''', 
+                                  (bom_fg_product, bom_rm_product, st.session_state.new_bom_qty))
+                    st.success(f"✅ BOM added: {bom_fg_product} requires {st.session_state.new_bom_qty} x {bom_rm_product}")
+                    st.session_state.new_bom_qty = 1.0  # Reset to 1.0 for the next entry
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
         st.markdown("#### 📋 BOM List")
         df_bom = fetch_data("""
         SELECT b.fg_product, b.rm_product, b.required_qty, p.unit as rm_unit, p.category as rm_category
