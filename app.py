@@ -2452,53 +2452,63 @@ elif page == "📈 Inventory":
         else:
             st.info("No RM inventory data available")
             
-    with tab2:
+        with tab2:
             st.markdown("### RM Stock Movement (Detailed)")
-            st.info("This shows each transaction with running balance (Purchase & Sales only)")
+            st.info("This shows each transaction with running balance (Purchase & Direct RM Sales)")
+            
+            # Fetch all products that have ANY movement record
             df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
+            
             if not df_products.empty:
                 selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
                 
-                # Fetch movements, excluding CONSUMPTION if it exists in DB from old data, 
-                # though new data won't have it.
+                # Fetch ALL movements for this product (Purchase, Sale, and even old Consumption records for visibility)
+                # We will handle the calculation logic below to ensure accuracy
                 df_movement = fetch_data("""
                 SELECT id, transaction_date, challan_no, transaction_type, qty
                 FROM rm_stock_movement
-                WHERE product_name = ? AND transaction_type != 'CONSUMPTION'
+                WHERE product_name = ?
                 ORDER BY transaction_date, id
                 """, (selected_product,))
                 
                 if not df_movement.empty:
                     opening_result = fetch_data("SELECT COALESCE(opening_stock, 0) as opening_stock FROM rm_inventory WHERE product_name = ?", (selected_product,))
                     opening_stock = opening_result['opening_stock'].iloc[0] if not opening_result.empty else 0
+                    
                     running_balance = opening_stock
                     opening_balances = []
                     closing_balances = []
                     
                     for idx, row in df_movement.iterrows():
                         opening_balances.append(running_balance)
+                        
+                        # Logic: Purchase adds stock. Sale/Consumption removes stock.
                         if row['transaction_type'] == 'PURCHASE':
                             running_balance += row['qty']
-                        elif row['transaction_type'] == 'SALE': # Handle direct RM sales
+                        elif row['transaction_type'] in ['SALE', 'CONSUMPTION']: 
+                            # Treat both SALE and old CONSUMPTION records as deductions for display
                             running_balance -= row['qty']
-                        # Consumption is ignored here as per request
+                            
                         closing_balances.append(running_balance)
                     
                     df_movement['opening_balance'] = opening_balances
                     df_movement['closing_balance'] = closing_balances
+                    
+                    # Display the dataframe
                     df_display = df_movement[['transaction_date', 'challan_no', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
                     st.dataframe(df_display, use_container_width=True)
                     
                     col1, col2, col3 = st.columns(3)
                     total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
-                    total_sales = df_movement[df_movement['transaction_type']=='SALE']['qty'].sum() if 'SALE' in df_movement['transaction_type'].values else 0
+                    # Sum both SALE and CONSUMPTION for total deductions
+                    total_deductions = df_movement[df_movement['transaction_type'].isin(['SALE', 'CONSUMPTION'])]['qty'].sum()
                     final_balance = closing_balances[-1] if closing_balances else 0
                     
                     with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
-                    with col2: st.metric("Total Sales (RM)", f"{total_sales:,.0f}")
+                    with col2: st.metric("Total Deductions (Sales/Consumption)", f"{total_deductions:,.0f}")
                     with col3: st.metric("Current Balance", f"{final_balance:,.0f}")
                 else:
-                    st.info("No purchase/sale movement records for this product")
+                    st.info("No movement records found for this product.")
             else:
                 st.info("No RM stock movement data available")
                 
