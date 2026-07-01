@@ -2578,7 +2578,7 @@ elif page == "📈 Inventory":
                 "Total Required (All Sales)": total_required,
                 "No. of Sales Transactions": unique_sales
             })
-                    total_sales_value += total_required * rate
+                total_sales_value += total_required * rate
                 
                 sales_calc_df = pd.DataFrame(sales_calc_rows)
                 
