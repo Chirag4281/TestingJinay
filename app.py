@@ -253,63 +253,70 @@ def fetch_data(query, params=()):
 
 def calculate_rm_opening_balance(product_name, before_date=None):
     """Calculate opening balance for a product up to a specific date"""
+    # Note: We only look at PURCHASE and SALE (if RM is sold directly). 
+    # Consumption is removed from RM logic as per request.
     if before_date:
         query = """
-        SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty 
-                                WHEN transaction_type='CONSUMPTION' THEN -qty 
-                                ELSE 0 END), 0) as balance
-        FROM rm_stock_movement 
+        SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty
+                                 WHEN transaction_type='SALE' THEN -qty
+                                 ELSE 0 END), 0) as balance
+        FROM rm_stock_movement
         WHERE product_name = ? AND transaction_date < ?
         """
         result = fetch_data(query, (product_name, before_date))
     else:
         query = """
-        SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty 
-                                WHEN transaction_type='CONSUMPTION' THEN -qty 
-                                ELSE 0 END), 0) as balance
-        FROM rm_stock_movement 
+        SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty
+                                 WHEN transaction_type='SALE' THEN -qty
+                                 ELSE 0 END), 0) as balance
+        FROM rm_stock_movement
         WHERE product_name = ?
         """
         result = fetch_data(query, (product_name,))
-        
     return result['balance'].iloc[0] if not result.empty else 0
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
     
+    # Logic: Only Purchase adds stock. Sale removes stock. 
+    # Consumption is removed from RM Inventory logic.
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'CONSUMPTION':
+    elif transaction_type == 'SALE': # If RM is sold directly
         closing_balance = opening_balance - qty
+        # Assuming we might want to track sales of RM separately if needed, 
+        # but for now mapping to consumed logic or just reducing stock
         execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
     else:
         closing_balance = opening_balance
         
-    execute_query('''INSERT INTO rm_stock_movement 
-        (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
-        (transaction_date, challan_no, product, transaction_type, qty, opening_balance, closing_balance, reference_id))
-        
+    # Insert movement record. 
+    # IMPORTANT: We store 'SALE' or 'PURCHASE'. We do NOT store 'CONSUMPTION' for RM anymore.
+    display_type = transaction_type 
+    execute_query('''INSERT INTO rm_stock_movement
+    (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+    (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
+
     result = fetch_data("""
-        SELECT COALESCE(opening_stock, 0) as opening_stock, 
-               COALESCE(total_purchased_qty, 0) as total_purchased, 
-               COALESCE(total_consumed_qty, 0) as total_consumed
-        FROM rm_inventory WHERE product_name = ?
+    SELECT COALESCE(opening_stock, 0) as opening_stock,
+           COALESCE(total_purchased_qty, 0) as total_purchased,
+           COALESCE(total_consumed_qty, 0) as total_consumed
+    FROM rm_inventory WHERE product_name = ?
     """, (product,))
     
     if not result.empty:
         opening = result['opening_stock'].iloc[0]
         purchased = result['total_purchased'].iloc[0]
-        consumed = result['total_consumed'].iloc[0]
+        consumed = result['total_consumed'].iloc[0] # This now tracks direct sales of RM or other deductions
         closing_stock = opening + purchased - consumed
         execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))
-        
+
     if rate > 0:
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
-        
-    return closing_balance
 
+    return closing_balance
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -989,161 +996,106 @@ elif page == "📦 Masters":
 
     with tab3:
         st.markdown("### 🔧 BOM (Bill of Materials) Management")
-        st.info("Define RM materials required for each FG product. When FG is sold, RM will be auto-consumed.")
         
-        # =================== HARDCODED BOM DATA ===================
-        # This data is from your FG TO RM QTY.xlsx file
+        # =================== HARDCODED BOM DATA INITIALIZATION ===================
         BOM_DATA = {
-            "5A SSC with JB": {
-                "5A STC": 1, "5A DTC": 1, "5A W/S": 2, "5A C/C": 1,
-                "5A Action": 1, "5A Earting Pin": 1, "5A Live Pin": 1,
-                "5A Threading Patti": 2, "5/15A Bulb": 1,
-            },
-            "5A 8x1 with JB": {
-                "5A STC": 2, "5A DTC": 2, "5A W/S": 4, "5A C/C": 2,
-                "5A Action": 2, "5A Earting Pin": 2, "5A Live Pin": 2,
-                "5A Threading Patti": 4, "5/15A Bulb": 2,
-            },
-            "5A 10x1 with JB": {
-                "5A STC": 2, "5A DTC": 2, "5A W/S": 4, "5A C/C": 2,
-                "5A Action": 2, "5A Earting Pin": 2, "5A Live Pin": 2,
-                "5A Threading Patti": 4, "5/15A Bulb": 2, "5A 2 Pin": 2,
-            },
-            "15A SSC with JB": {
-                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
-                "15A Earting Pin": 1, "15A Live Pin": 2,
-                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
-            },
-            "15A SSC Consil": {
-                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
-                "15A Earting Pin": 1, "15A Live Pin": 2,
-                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
-            },
-            "15A SSC with Jb IND": {
-                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
-                "15A Earting Pin": 1, "15A Live Pin": 2,
-                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
-                "DSSC Spike 1 mt": 1,
-            },
-            "15A SSC IND Consil": {
-                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
-                "15A Earting Pin": 1, "15A Live Pin": 2,
-                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
-                "DSSC Spike 1 mt": 1,
-            },
-            "15A SSC MCB": {
-                "15A Earting Pin": 1, "15A Live Pin": 2,
-            },
-            "15A DSSC with JB": {
-                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
-                "15A Earting Pin": 2, "15A Live Pin": 4,
-                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
-                "DSSC Spike 1 mt": 2,
-            },
-            "15A DSSC With JB (Brass)": {
-                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
-                "15A Earting Pin": 2, "15A Live Pin": 4,
-                "15A Action 21+5 Brass": 2, "15A MS Action": 2,
-                "15A Threading Patti": 2, "DSSC Spike 1 mt": 2,
-            },
-            "15A DSSC Spike 3mt": {
-                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
-                "15A Earting Pin": 2, "15A Live Pin": 4,
-                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
-                "DSSC Spike 1 mt": 2, "DSSC Spike 3 mt": 1,
-            },
-            "15A DSSC Spike 5 mt": {
-                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
-                "15A Earting Pin": 2, "15A Live Pin": 4,
-                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
-                "DSSC Spike 1 mt": 2, "DSSC Spike 5 mt": 1,
-            },
-            "15A DSSC 1Mt Connector": {
-                "15A STC": 2, "15A DTC": 2, "15A W/S": 4, "15A C/C": 2,
-                "15A Earting Pin": 2, "15A Live Pin": 4,
-                "15A Action 21+5 Brass": 2, "15A Threading Patti": 2,
-                "DSSC Spike 1 mt": 2, "Kitkat Part Set": 1,
-            },
-            "TSSC": {
-                "15A STC": 3, "15A DTC": 3, "15A W/S": 6, "15A C/C": 3,
-                "15A Earting Pin": 3, "15A Live Pin": 6,
-                "15A Action 21+5 Brass": 3, "15A Threading Patti": 3,
-                "DSSC Spike 1 mt": 3,
-            },
-            "5X1 with JB": {
-                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
-                "15A Earting Pin": 1, "15A Live Pin": 2,
-                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
-                "5A STC": 2, "5A DTC": 2, "DSSC Spike 1 mt": 1, "DSSC Spike 3 mt": 1,
-            },
-            "5x1 Consil": {
-                "15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1,
-                "15A Earting Pin": 1, "15A Live Pin": 2,
-                "15A Action 21+5 Brass": 1, "15A Threading Patti": 1,
-                "5A STC": 2, "5A DTC": 2, "DSSC Spike 1 mt": 1, "DSSC Spike 3 mt": 1,
-            },
+            "5A SSC with JB": {"5A STC": 1, "5A DTC": 1, "5A W/S": 2, "5A C/C": 1, "5A Action": 1, "5A Earting Pin": 1, "5A Live Pin": 1, "5A Threading Patti": 2, "5/15A Bulb": 1},
+            "5A 8x1 with JB": {"5A STC": 2, "5A DTC": 2, "5A W/S": 4, "5A C/C": 2, "5A Action": 2, "5A Earting Pin": 2, "5A Live Pin": 2, "5A Threading Patti": 4, "5/15A Bulb": 2},
+            "15A SSC with JB": {"15A STC": 1, "15A DTC": 1, "15A W/S": 2, "15A C/C": 1, "15A Earting Pin": 1, "15A Live Pin": 2, "15A Action 21+5 Brass": 1, "15A Threading Patti": 1},
+            "TSSC": {"15A STC": 3, "15A DTC": 3, "15A W/S": 6, "15A C/C": 3, "15A Earting Pin": 3, "15A Live Pin": 6, "15A Action 21+5 Brass": 3, "15A Threading Patti": 3, "DSSC Spike 1 mt": 3}
         }
-        
-        # Auto-populate BOM on first run
+
         if 'bom_initialized' not in st.session_state:
             existing_bom = fetch_data("SELECT COUNT(*) as count FROM bom_master")
             if existing_bom.empty or existing_bom['count'].iloc[0] == 0:
                 records = 0
                 for fg_product, rm_dict in BOM_DATA.items():
                     for rm_product, qty in rm_dict.items():
-                        execute_query("INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)",
-                                      (fg_product, rm_product, float(qty)))
+                        execute_query("INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)", (fg_product, rm_product, float(qty)))
                         records += 1
                 if records > 0:
                     st.success(f"✅ Auto-populated {records} BOM entries from template data!")
-            st.session_state.bom_initialized = True
-        
+                st.session_state.bom_initialized = True
+
         st.markdown("---")
-        st.markdown("#### Add BOM Entry Manually")
+        
+        # --- EDIT EXISTING BOM SECTION ---
+        st.markdown("#### ✏️ Edit Existing BOM Entry")
+        df_bom_list = fetch_data("SELECT fg_product, rm_product, required_qty FROM bom_master ORDER BY fg_product, rm_product")
+        
+        if not df_bom_list.empty:
+            # Create a readable label for selection
+            bom_options = [f"{row['fg_product']} -> {row['rm_product']} (Qty: {row['required_qty']})" for _, row in df_bom_list.iterrows()]
+            selected_bom_label = st.selectbox("Select BOM Entry to Edit", bom_options)
+            
+            if selected_bom_label:
+                # Parse the selection to get FG and RM names
+                parts = selected_bom_label.split(" -> ")
+                sel_fg = parts[0]
+                sel_rm_qty_part = parts[1].split(" (Qty: ")
+                sel_rm = sel_rm_qty_part[0]
+                
+                col_e1, col_e2, col_e3 = st.columns([2, 1, 1])
+                with col_e1:
+                    st.text_input("FG Product", value=sel_fg, disabled=True)
+                    st.text_input("RM Material", value=sel_rm, disabled=True)
+                with col_e2:
+                    new_qty = st.number_input("New Required Qty (Plus/Minus)", min_value=0.001, step=0.001, value=float(sel_rm_qty_part[1].replace(")", "")))
+                with col_e3:
+                    if st.button("💾 Update Qty", type="primary"):
+                        execute_query("UPDATE bom_master SET required_qty = ? WHERE fg_product = ? AND rm_product = ?", (new_qty, sel_fg, sel_rm))
+                        st.success("✅ BOM Quantity Updated!")
+                        st.rerun()
+        else:
+            st.info("No BOM entries found.")
+
+        st.markdown("---")
+        st.markdown("#### ➕ Add New BOM Entry Manually")
         col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
         with col1:
             df_fg = fetch_data("SELECT product_name FROM product_master WHERE category IN ('FG Product', 'Moulding Product') ORDER BY product_name")
             fg_list = df_fg['product_name'].tolist() if not df_fg.empty else []
-            bom_fg_product = st.selectbox("FG Product", fg_list if fg_list else ["No FG products"], key="bom_fg_select")
+            bom_fg_product = st.selectbox("FG Product", fg_list if fg_list else ["No FG products"], key="bom_fg_select_new")
         with col2:
-            bom_cat_filter = st.selectbox("Filter RM By Category", ["RM Product", "All"], key="bom_rm_cat_filter")
+            bom_cat_filter = st.selectbox("Filter RM By Category", ["RM Product", "All"], key="bom_rm_cat_filter_new")
             if bom_cat_filter == "RM Product":
                 df_rm = fetch_data("SELECT product_name FROM product_master WHERE category = 'RM Product' ORDER BY product_name")
             else:
                 df_rm = fetch_data("SELECT product_name FROM product_master ORDER BY product_name")
             rm_list = df_rm['product_name'].tolist() if not df_rm.empty else []
-            bom_rm_product = st.selectbox("RM Material", rm_list if rm_list else ["No RM products"], key="bom_rm_select")
+            bom_rm_product = st.selectbox("RM Material", rm_list if rm_list else ["No RM products"], key="bom_rm_select_new")
         with col3:
-            bom_qty = st.number_input("Req Qty", min_value=0.001, step=0.001, value=1.0, key="bom_qty_input")
+            bom_qty = st.number_input("Req Qty", min_value=0.001, step=0.001, value=1.0, key="bom_qty_input_new")
         with col4:
-            if st.button("Add BOM", type="primary", key="add_bom_btn"):
+            if st.button("Add BOM", type="primary", key="add_bom_btn_new"):
                 if bom_fg_product != "No FG products" and bom_rm_product != "No RM products":
                     try:
-                        execute_query('''INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)''',
-                                      (bom_fg_product, bom_rm_product, bom_qty))
-                        st.success(f"✅ BOM updated: {bom_fg_product} requires {bom_qty} x {bom_rm_product}")
+                        execute_query('''INSERT OR REPLACE INTO bom_master (fg_product, rm_product, required_qty) VALUES (?, ?, ?)''', (bom_fg_product, bom_rm_product, bom_qty))
+                        st.success(f"✅ BOM added: {bom_fg_product} requires {bom_qty} x {bom_rm_product}")
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
-    
-        st.markdown("#### BOM List")
+
+        st.markdown("#### 📋 BOM List")
         df_bom = fetch_data("""
-            SELECT b.fg_product, b.rm_product, b.required_qty, p.unit as rm_unit, p.category as rm_category
-            FROM bom_master b LEFT JOIN product_master p ON b.rm_product = p.product_name
-            ORDER BY b.fg_product, b.rm_product
+        SELECT b.fg_product, b.rm_product, b.required_qty, p.unit as rm_unit, p.category as rm_category
+        FROM bom_master b LEFT JOIN product_master p ON b.rm_product = p.product_name
+        ORDER BY b.fg_product, b.rm_product
         """)
         if not df_bom.empty:
             st.dataframe(df_bom, use_container_width=True)
-            st.markdown("#### Delete BOM Entry")
-            bom_to_delete = st.selectbox("Select BOM to Delete",
-                [f"{row['fg_product']} - {row['rm_product']}" for _, row in df_bom.iterrows()], key="delete_bom_select")
-            if st.button("Delete BOM Entry", key="delete_bom_btn"):
-                fg, rm = bom_to_delete.split(" - ")
-                execute_query("DELETE FROM bom_master WHERE fg_product = ? AND rm_product = ?", (fg, rm))
-                st.success("✅ BOM entry deleted!")
-                st.rerun()
+
+        st.markdown("#### 🗑️ Delete BOM Entry")
+        bom_to_delete = st.selectbox("Select BOM to Delete",
+            [f"{row['fg_product']} - {row['rm_product']}" for _, row in df_bom.iterrows()], key="delete_bom_select")
+        if st.button("Delete BOM Entry", key="delete_bom_btn"):
+            fg, rm = bom_to_delete.split(" - ")
+            execute_query("DELETE FROM bom_master WHERE fg_product = ? AND rm_product = ?", (fg, rm))
+            st.success("✅ BOM entry deleted!")
+            st.rerun()
         else:
-            st.info("No BOM entries defined yet. Please add manually above.")# ======================= PURCHASE ENTRY =======================
+            st.info("No BOM entries defined yet. Please add manually above.")
+        # ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
     st.subheader("🛒 Purchase Entry")
     if 'pur_party_filter' not in st.session_state:
@@ -1735,11 +1687,7 @@ elif page == "💰 Sales Entry":
                         
                         sale_id = execute_query('''SELECT last_insert_rowid()''', ())
                         
-                        consumed_items = []
-                        if actual_prod_cat in ['FG Product', 'Moulding Product']:
-                            consumed_items = consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, sale_id)
-                            if consumed_items:
-                                st.info(f"📦 RM Materials Auto-Consumed: {', '.join(consumed_items)}")
+                        
                                 
                         if actual_prod_cat == 'RM Product':
                             update_rm_inventory(product, qty, 'CONSUMPTION', sales_date.strftime('%Y-%m-%d'), challan_no, rate=rate)
@@ -1860,46 +1808,72 @@ elif page == "💰 Sales Entry":
                         old_qty = row['qty']
                         old_product = row['product_name']
                         old_prod_cat = row['product_category']
-                        qty_diff = edit_qty - old_qty
+                        old_challan = row['challan_no']
+                        old_party = row['party_name']
+                        old_amount = row['amount']
                         
-                        execute_query('''UPDATE sales_transactions SET 
-                            challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
-                            WHERE id=?''',
-                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, edit_payment_days, 
-                             (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d'), st.session_state.edit_id))
-                             
+                        qty_diff = edit_qty - old_qty
+                        new_amount = edit_qty * edit_rate
+                        amount_diff = new_amount - old_amount
+                        
+                        # 1. Update Sales Transaction
+                        execute_query('''UPDATE sales_transactions SET
+                        challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
+                        WHERE id=?''',
+                        (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
+                        (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d'), st.session_state.edit_id))
+    
+                        # 2. Update Inventory (Reverse Old, Apply New)
                         if old_product == edit_product and old_prod_cat == edit_product_category:
                             if qty_diff != 0:
                                 if old_prod_cat == 'RM Product':
+                                    # If RM was sold directly
                                     execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                     execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (qty_diff, edit_product))
                                 else:
+                                    # FG Sold
                                     execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                     execute_query("""
-                                        UPDATE fg_inventory 
-                                        SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                        WHERE product_name = ?
+                                    UPDATE fg_inventory
+                                    SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                                    WHERE product_name = ?
                                     """, (edit_product,))
                         else:
+                            # Product Changed: Reverse Old Product
                             if old_prod_cat == 'RM Product':
                                 execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                                 execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (old_qty, old_product))
                             else:
                                 execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                                 execute_query("""
-                                    UPDATE fg_inventory 
-                                    SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                    WHERE product_name = ?
+                                UPDATE fg_inventory
+                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                                WHERE product_name = ?
                                 """, (old_product,))
-                                
+                            
+                            # Apply New Product
                             if edit_product_category == 'RM Product':
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
-                                update_rm_inventory(edit_product, edit_qty, 'CONSUMPTION', edit_date.strftime('%Y-%m-%d'), edit_challan, rate=edit_rate)
+                                # Note: We don't auto-consume RM for FG sales anymore, but if selling RM directly:
+                                update_rm_inventory(edit_product, edit_qty, 'SALE', edit_date.strftime('%Y-%m-%d'), edit_challan, rate=edit_rate)
                             else:
                                 execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                 update_fg_inventory(edit_product, edit_qty, 'SALE')
-                                
-                        st.success("✅ Sales entry updated successfully!")
+    
+                        # 3. DIRECTLY UPDATE LEDGER (Receivables)
+                        # We identify the ledger entry by Challan No and Party Name associated with this Sale ID
+                        # First, delete the old ledger entry to avoid duplicates if Challan/Party changed
+                        execute_query("""
+                        DELETE FROM payable_receivable_ledger 
+                        WHERE transaction_type = 'RECEIVABLE' 
+                        AND challan_no = ? 
+                        AND party_name = ?
+                        """, (old_challan, old_party))
+                        
+                        # Create new updated ledger entry
+                        create_receivable_entry(edit_party, edit_challan, edit_date.strftime('%Y-%m-%d'), new_amount, edit_payment_days)
+    
+                        st.success("✅ Sales entry, Inventory, and Ledger updated successfully!")
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
                         st.rerun()
@@ -2418,55 +2392,55 @@ elif page == "📈 Inventory":
             st.info("No RM inventory data available")
             
     with tab2:
-        st.markdown("### RM Stock Movement (Detailed)")
-        st.info("This shows each transaction with running balance")
-        
-        df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
-        if not df_products.empty:
-            selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
-            
-            df_movement = fetch_data("""
+            st.markdown("### RM Stock Movement (Detailed)")
+            st.info("This shows each transaction with running balance (Purchase & Sales only)")
+            df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
+            if not df_products.empty:
+                selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
+                
+                # Fetch movements, excluding CONSUMPTION if it exists in DB from old data, 
+                # though new data won't have it.
+                df_movement = fetch_data("""
                 SELECT id, transaction_date, challan_no, transaction_type, qty
-                FROM rm_stock_movement 
-                WHERE product_name = ?
+                FROM rm_stock_movement
+                WHERE product_name = ? AND transaction_type != 'CONSUMPTION'
                 ORDER BY transaction_date, id
-            """, (selected_product,))
-            
-            if not df_movement.empty:
-                opening_result = fetch_data("SELECT COALESCE(opening_stock, 0) as opening_stock FROM rm_inventory WHERE product_name = ?", (selected_product,))
-                opening_stock = opening_result['opening_stock'].iloc[0] if not opening_result.empty else 0
+                """, (selected_product,))
                 
-                running_balance = opening_stock
-                opening_balances = []
-                closing_balances = []
-                
-                for idx, row in df_movement.iterrows():
-                    opening_balances.append(running_balance)
-                    if row['transaction_type'] == 'PURCHASE':
-                        running_balance += row['qty']
-                    elif row['transaction_type'] == 'CONSUMPTION':
-                        running_balance -= row['qty']
-                    closing_balances.append(running_balance)
+                if not df_movement.empty:
+                    opening_result = fetch_data("SELECT COALESCE(opening_stock, 0) as opening_stock FROM rm_inventory WHERE product_name = ?", (selected_product,))
+                    opening_stock = opening_result['opening_stock'].iloc[0] if not opening_result.empty else 0
+                    running_balance = opening_stock
+                    opening_balances = []
+                    closing_balances = []
                     
-                df_movement['opening_balance'] = opening_balances
-                df_movement['closing_balance'] = closing_balances
-                
-                df_display = df_movement[['transaction_date', 'challan_no', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
-                st.dataframe(df_display, use_container_width=True)
-                
-                col1, col2, col3 = st.columns(3)
-                total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
-                total_consumptions = df_movement[df_movement['transaction_type']=='CONSUMPTION']['qty'].sum()
-                final_balance = closing_balances[-1] if closing_balances else 0
-                
-                with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
-                with col2: st.metric("Total Consumptions", f"{total_consumptions:,.0f}")
-                with col3: st.metric("Current Balance", f"{final_balance:,.0f}")
+                    for idx, row in df_movement.iterrows():
+                        opening_balances.append(running_balance)
+                        if row['transaction_type'] == 'PURCHASE':
+                            running_balance += row['qty']
+                        elif row['transaction_type'] == 'SALE': # Handle direct RM sales
+                            running_balance -= row['qty']
+                        # Consumption is ignored here as per request
+                        closing_balances.append(running_balance)
+                    
+                    df_movement['opening_balance'] = opening_balances
+                    df_movement['closing_balance'] = closing_balances
+                    df_display = df_movement[['transaction_date', 'challan_no', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
+                    st.dataframe(df_display, use_container_width=True)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
+                    total_sales = df_movement[df_movement['transaction_type']=='SALE']['qty'].sum() if 'SALE' in df_movement['transaction_type'].values else 0
+                    final_balance = closing_balances[-1] if closing_balances else 0
+                    
+                    with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
+                    with col2: st.metric("Total Sales (RM)", f"{total_sales:,.0f}")
+                    with col3: st.metric("Current Balance", f"{final_balance:,.0f}")
+                else:
+                    st.info("No purchase/sale movement records for this product")
             else:
-                st.info("No movement records for this product")
-        else:
-            st.info("No RM stock movement data available")
-            
+                st.info("No RM stock movement data available")
+                
     with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
         df_fg_inv = fetch_data("""
@@ -2599,16 +2573,11 @@ elif page == "📈 Inventory":
                     # Count unique sales transactions for this RM
                     unique_sales = len(set([b['sale_id'] for b in rm_data['breakdown']]))
                     
-                    sales_calc_rows.append({
-                        "RM Product": rm_name,
-                        "Total Required (All Sales)": total_required,
-                        "Available Stock": available,
-                        "Shortage (+) / Surplus (-)": shortage,
-                        "Rate (₹)": rate,
-                        "Required Value (₹)": total_required * rate,
-                        "Status": status,
-                        "No. of Sales Transactions": unique_sales
-                    })
+                sales_calc_rows.append({
+                "RM Product": rm_name,
+                "Total Required (All Sales)": total_required,
+                "No. of Sales Transactions": unique_sales
+            })
                     total_sales_value += total_required * rate
                 
                 sales_calc_df = pd.DataFrame(sales_calc_rows)
