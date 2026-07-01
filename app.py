@@ -1035,16 +1035,52 @@ elif page == "📦 Masters":
                 sel_rm_qty_part = parts[1].split(" (Qty: ")
                 sel_rm = sel_rm_qty_part[0]
                 
-                col_e1, col_e2, col_e3 = st.columns([2, 1, 1])
+                                # Initialize session state for BOM quantity editing
+                if 'bom_edit_qty' not in st.session_state:
+                    st.session_state.bom_edit_qty = float(sel_rm_qty_part[1].replace(")", ""))
+                    st.session_state.bom_edit_prev_label = selected_bom_label
+                
+                # Reset quantity if the user selects a different BOM entry
+                if st.session_state.get('bom_edit_prev_label') != selected_bom_label:
+                    st.session_state.bom_edit_qty = float(sel_rm_qty_part[1].replace(")", ""))
+                    st.session_state.bom_edit_prev_label = selected_bom_label
+
+                col_e1, col_e2 = st.columns([2, 2])
                 with col_e1:
                     st.text_input("FG Product", value=sel_fg, disabled=True)
                     st.text_input("RM Material", value=sel_rm, disabled=True)
+                
                 with col_e2:
-                    new_qty = st.number_input("New Required Qty (Plus/Minus)", min_value=0.001, step=0.001, value=float(sel_rm_qty_part[1].replace(")", "")))
-                with col_e3:
-                    if st.button("💾 Update Qty", type="primary"):
-                        execute_query("UPDATE bom_master SET required_qty = ? WHERE fg_product = ? AND rm_product = ?", (new_qty, sel_fg, sel_rm))
-                        st.success("✅ BOM Quantity Updated!")
+                    st.markdown("**Adjust Quantity (Click ➕ or ➖)**")
+                    
+                    # Create columns for Minus, Input, Plus
+                    col_m1, col_m2, col_m3 = st.columns([1, 2, 1])
+                    with col_m1:
+                        if st.button("➖", key="bom_minus_btn", help="Decrease by 1"):
+                            st.session_state.bom_edit_qty = max(0.001, st.session_state.bom_edit_qty - 1.0)
+                            st.rerun()
+                    with col_m2:
+                        # Allow manual typing as well
+                        typed_qty = st.number_input(
+                            "Qty", 
+                            min_value=0.001, 
+                            step=1.0, 
+                            value=float(st.session_state.bom_edit_qty), 
+                            key="bom_qty_manual_input"
+                        )
+                        # Sync manual typing back to state
+                        if typed_qty != st.session_state.bom_edit_qty:
+                            st.session_state.bom_edit_qty = typed_qty
+                    with col_m3:
+                        if st.button("➕", key="bom_plus_btn", help="Increase by 1"):
+                            st.session_state.bom_edit_qty = st.session_state.bom_edit_qty + 1.0
+                            st.rerun()
+                    
+                    # Update Button
+                    if st.button("💾 Save Updated Qty", type="primary", key="save_bom_qty_btn"):
+                        execute_query("UPDATE bom_master SET required_qty = ? WHERE fg_product = ? AND rm_product = ?", 
+                                      (st.session_state.bom_edit_qty, sel_fg, sel_rm))
+                        st.success(f"✅ BOM Quantity updated to {st.session_state.bom_edit_qty}!")
                         st.rerun()
         else:
             st.info("No BOM entries found.")
