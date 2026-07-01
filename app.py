@@ -2662,7 +2662,7 @@ elif page == "📈 Inventory":
                     st.metric("💰 Total RM Value", f"₹{total_sales_value:,.2f}")
                 with m4:
                     #shortage_items = len([r for r in sales_calc_rows if r["Status"] == "❌ SHORTAGE"])
-                    st.metric("⚠️ Items in Shortage", shortage_items)
+                    st.metric("⚠️ Items in Shortage")
                 
                 # Color the status column (Safe for all Pandas versions)
                 def highlight_status_sales(val):
