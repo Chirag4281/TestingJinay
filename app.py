@@ -1751,7 +1751,7 @@ elif page == "💰 Sales Entry":
                         
                                 
                         if actual_prod_cat == 'RM Product':
-                            update_rm_inventory(product, qty, 'CONSUMPTION', sales_date.strftime('%Y-%m-%d'), challan_no, rate=rate)
+                            update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, rate=rate)
                         else:
                             update_fg_inventory(product, qty, 'SALE')
                             
