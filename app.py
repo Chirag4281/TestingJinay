@@ -2581,38 +2581,25 @@ elif page == "📈 Inventory":
                 total_sales_value += total_required * rate
                 
                 sales_calc_df = pd.DataFrame(sales_calc_rows)
-                
-                # Display summary metrics
-                m1, m2, m3, m4 = st.columns(4)
-                with m1:
-                    st.metric("📦 Total FG Sales", len(df_fg_sales))
-                with m2:
-                    st.metric("🔧 RM Types Required", len(sales_calc_rows))
-                with m3:
-                    st.metric("💰 Total RM Value", f"₹{total_sales_value:,.2f}")
-                with m4:
-                    pass
-                
-                # Color the status column
-                def highlight_status_sales(val):
-                    if val == "❌ SHORTAGE":
-                        return 'background-color: #ffebee; color: #c62828; font-weight: bold'
-                    else:
-                        return 'background-color: #e8f5e9; color: #2e7d32; font-weight: bold'
-                
-                try:
-                    styled_sales_df = sales_calc_df.style.map(highlight_status_sales, subset=['Status'])
-                except AttributeError:
-                    styled_sales_df = sales_calc_df.style.applymap(highlight_status_sales, subset=['Status'])
-                
-                st.dataframe(styled_sales_df, use_container_width=True, hide_index=True)
-                
-                # Show overall status
-                if has_shortage:
-                    st.error(f"⚠️ **Shortage Alert:** {shortage_items} RM material(s) are insufficient for current sales. "
-                            f"Please purchase the shortage materials.")
-                else:
-                    st.success(f"✅ **All RM materials available!** You have sufficient stock for all FG sales.")
+
+        # Display summary metrics (Removed the 4th column for shortage items)
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("📦 Total FG Sales", len(df_fg_sales))
+        with m2:
+            st.metric("🔧 RM Types Required", len(sales_calc_rows))
+        with m3:
+            st.metric("💰 Total RM Value", f"₹{total_sales_value:,.2f}")
+
+        # Display the dataframe normally (Styling removed since 'Status' column was removed)
+        st.dataframe(sales_calc_df, use_container_width=True, hide_index=True)
+
+        # Show overall status
+        if has_shortage:
+            st.error(f"⚠️ **Shortage Alert:** Some RM materials are insufficient for current sales. "
+                     f"Please purchase the shortage materials.")
+        else:
+            st.success(f"✅ **All RM materials available!** You have sufficient stock for all FG sales.")
                 
                 # =================== NEW: DETAILED SALES TRANSACTIONS TABLE ===================
                 st.markdown("---")
