@@ -1228,33 +1228,38 @@ elif page == "🛒 Purchase Entry":
             else:
                 st.metric("Total Amount", "₹0.00")
                 
-            submitted = st.form_submit_button("Save Purchase", type="primary")
-            if submitted:
-                if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
-                    try:
-                        purchase_amount = qty * rate
-                        purchase_id = execute_query('''INSERT INTO purchase_transactions
-                        (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, entry_type)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
-                        (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, purchase_amount))
-                        
-                        if actual_prod_cat == 'RM Product':
-                # Direct Sale of RM: Deducts from RM Inventory
-                            update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, rate=rate)
-                        else:
-                # Sale of FG/Moulding/Powder: Deducts from FG Inventory (which includes your purchased stock)
-                            update_fg_inventory(product, qty, 'SALE')
+                submitted = st.form_submit_button("Save Purchase", type="primary")
+                if submitted:
+                    if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
+                        try:
+                            purchase_amount = qty * rate
+                            
+                            # 1. Save the transaction record
+                            purchase_id = execute_query('''INSERT INTO purchase_transactions
+                            (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, entry_type)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
+                            (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, purchase_amount))
             
-                        create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
-                        st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
-            
-            # REMOVED: Auto-consumption of RM. Purchased products are strictly for sale and not auto-deducted for FG to RM.
-            
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
-                else:
-                    st.warning("Please fill all required fields")
+                            # 2. Update Inventory Based on Category
+                            if actual_prod_cat == 'RM Product':
+                                # FIX: Use 'PURCHASE' type to ADD stock to RM Inventory
+                                # Previously this was 'SALE' which incorrectly deducted stock
+                                update_rm_inventory(product, qty, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id, rate=rate)
+                                
+                            elif actual_prod_cat in ['FG Product', 'Moulding Product', 'Powder']:
+                                # For FG/Moulding/Powder, add to FG Inventory as Purchased Stock
+                                update_fg_inventory(product, qty, 'PURCHASE')
+                            
+                            # 3. Create Payable Entry (Since we are Buying, we owe money)
+                            create_payable_entry(party, challan_no, purchase_date.strftime('%Y-%m-%d'), purchase_amount, payment_days)
+                            
+                            st.success(f"✅ Purchase entry saved successfully! Amount: ₹{purchase_amount:,.2f}")
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
+                    else:
+                        st.warning("Please fill all required fields")
     st.markdown("---")
     st.markdown("### 📝 Manage Purchase Entries")
     df_all_purchases = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC")
