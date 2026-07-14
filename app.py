@@ -278,44 +278,40 @@ def calculate_rm_opening_balance(product_name, before_date=None):
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
     
-    # Logic: Only Purchase adds stock. Sale removes stock. 
-    # Consumption is removed from RM Inventory logic.
+    # Logic: Only Purchase adds stock. Sale removes stock.
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
     elif transaction_type == 'SALE': # If RM is sold directly
         closing_balance = opening_balance - qty
-        # Assuming we might want to track sales of RM separately if needed, 
-        # but for now mapping to consumed logic or just reducing stock
         execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
     else:
         closing_balance = opening_balance
-        
-    # Insert movement record. 
-    # IMPORTANT: We store 'SALE' or 'PURCHASE'. We do NOT store 'CONSUMPTION' for RM anymore.
-    display_type = transaction_type 
+
+    # Insert movement record.
+    display_type = transaction_type
     execute_query('''INSERT INTO rm_stock_movement
     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
     (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
-
+    
     result = fetch_data("""
     SELECT COALESCE(opening_stock, 0) as opening_stock,
-           COALESCE(total_purchased_qty, 0) as total_purchased,
-           COALESCE(total_consumed_qty, 0) as total_consumed
+    COALESCE(total_purchased_qty, 0) as total_purchased,
+    COALESCE(total_consumed_qty, 0) as total_consumed
     FROM rm_inventory WHERE product_name = ?
     """, (product,))
     
     if not result.empty:
         opening = result['opening_stock'].iloc[0]
         purchased = result['total_purchased'].iloc[0]
-        consumed = result['total_consumed'].iloc[0] # This now tracks direct sales of RM or other deductions
+        consumed = result['total_consumed'].iloc[0] 
         closing_stock = opening + purchased - consumed
         execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))
-
+        
     if rate > 0:
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
-
+        
     return closing_balance
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
@@ -2472,7 +2468,6 @@ elif page == "📈 Inventory":
             selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
             
             # UPDATED QUERY: Join with purchase/sales tables to get Party Name if available via reference_id or challan
-            # Note: rm_stock_movement stores reference_id which links to purchase_transactions or sales_transactions
             query_movement = """
             SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, rsm.reference_id
             FROM rm_stock_movement rsm
@@ -2503,16 +2498,37 @@ elif page == "📈 Inventory":
             df_movement = fetch_data(query_movement, tuple(params_movement))
             
             if not df_movement.empty:
-                # Enrich dataframe with Party Name for display
+                # Enrich dataframe with Party Name for display (Real-time fetch)
                 party_names = []
                 for _, row in df_movement.iterrows():
                     p_name = "N/A"
+                    # Fetch from Transaction Table using Reference ID to get the most up-to-date Party Name linkage
                     if row['transaction_type'] == 'PURCHASE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM purchase_transactions WHERE id = ?", (row['reference_id'],))
-                        if not res.empty: p_name = res['party_name'].iloc[0]
+                        if not res.empty: 
+                            # Optional: Check if party exists in master to get latest name if renamed, 
+                            # but usually transaction table holds the snapshot. 
+                            # To support "Realtime Update" if Master changes, we rely on the fact that 
+                            # we might want to show the CURRENT name of the party involved.
+                            # However, standard accounting keeps historical names. 
+                            # Assuming user wants to see who it WAS, we use transaction table.
+                            # If user wants CURRENT name of that party ID, we'd need a Party ID column.
+                            # Since we only have Name, we show the name from the transaction.
+                            p_name = res['party_name'].iloc[0]
                     elif row['transaction_type'] == 'SALE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM sales_transactions WHERE id = ?", (row['reference_id'],))
                         if not res.empty: p_name = res['party_name'].iloc[0]
+                    
+                    # Fallback: If reference_id is missing or null, try matching Challan No (less reliable but helpful)
+                    if p_name == "N/A" and pd.notna(row['challan_no']):
+                         # Try finding in Purchase
+                         res_p = fetch_data("SELECT party_name FROM purchase_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
+                         if not res_p.empty: p_name = res_p['party_name'].iloc[0]
+                         else:
+                             # Try Sales
+                             res_s = fetch_data("SELECT party_name FROM sales_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
+                             if not res_s.empty: p_name = res_s['party_name'].iloc[0]
+
                     party_names.append(p_name)
                 
                 df_movement['party_name'] = party_names
@@ -2553,9 +2569,6 @@ elif page == "📈 Inventory":
     with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
         # UPDATED QUERY: Join with sales_transactions to show last sold to / contractor if applicable
-        # Note: Since FG can be produced by contractors and sold to parties, we show a summary or last known interaction.
-        # For simplicity and performance, we will add a sub-query to find the most recent party associated with the product via Sales or Production.
-        
         df_fg_inv = fetch_data("""
         SELECT i.product_name, i.opening_stock, i.produced_qty, i.purchased_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
         FROM fg_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name
@@ -2564,16 +2577,16 @@ elif page == "📈 Inventory":
         """)
         
         if not df_fg_inv.empty:
-            # Enrich with Last Party Info
+            # Enrich with Last Party Info (Real-time Name Display)
             last_parties = []
             for _, row in df_fg_inv.iterrows():
                 prod_name = row['product_name']
-                # Check Sales first
+                # Check Sales first (Shows Sales Party Name)
                 sale_res = fetch_data("SELECT party_name FROM sales_transactions WHERE product_name = ? ORDER BY date DESC LIMIT 1", (prod_name,))
                 if not sale_res.empty:
                     last_parties.append(f"Sold to: {sale_res['party_name'].iloc[0]}")
                 else:
-                    # Check Production (Contractor)
+                    # Check Production (Shows Contractor/Moulder Name)
                     prod_res = fetch_data("SELECT party_name FROM production_register WHERE fg_product = ? ORDER BY date DESC LIMIT 1", (prod_name,))
                     if not prod_res.empty:
                         last_parties.append(f"Moulded by: {prod_res['party_name'].iloc[0]}")
