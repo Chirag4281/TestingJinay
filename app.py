@@ -2422,10 +2422,18 @@ elif page == "⚠️ Rejections":
 
 # ======================= INVENTORY =======================
 # ======================= INVENTORY =======================
-elif page == "ðŸ“ˆ Inventory":
-    st.subheader("ðŸ“ˆ Inventory Management")
-    tab1, tab2, tab3, tab4 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory", "ðŸ§® FG to RM Calculator"])
+elif page == "📈 Inventory":
+    st.subheader("📈 Inventory Management")
+    tab1, tab2, tab3, tab4 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory", "🧮 FG to RM Calculator"])
     
+    # Helper to get parties based on category for filters
+    def get_parties_by_category(category):
+        if category == "All":
+            df = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
+        else:
+            df = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (category,))
+        return ["All"] + (df['party_name'].tolist() if not df.empty else [])
+
     with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
         df_rm_inv = fetch_data("""
@@ -2440,6 +2448,7 @@ elif page == "ðŸ“ˆ Inventory":
             df_rm_inv['rate'] = pd.to_numeric(df_rm_inv['rate'], errors='coerce').fillna(0)
             df_rm_inv['corrected_closing_stock'] = df_rm_inv['opening_stock'] + df_rm_inv['total_purchased_qty'] - df_rm_inv['total_consumed_qty']
             
+            # Auto-correction of closing stock
             for index, row in df_rm_inv.iterrows():
                 if abs(row['closing_stock'] - row['corrected_closing_stock']) > 0.01:
                     execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?",
@@ -2447,7 +2456,7 @@ elif page == "ðŸ“ˆ Inventory":
 
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total RM Products", len(df_rm_inv))
-            with col2: st.metric("Total Stock Value", f"â‚¹{(df_rm_inv['corrected_closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
+            with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['corrected_closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
             with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
             
             display_df = df_rm_inv[['product_name', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'corrected_closing_stock', 'rate']].copy()
@@ -2465,100 +2474,115 @@ elif page == "ðŸ“ˆ Inventory":
                     current_consumed = fetch_data("SELECT COALESCE(total_consumed_qty, 0) FROM rm_inventory WHERE product_name = ?", (rm_product,)).iloc[0,0]
                     new_closing = new_opening + current_purchased - current_consumed
                     execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (new_closing, rm_product))
-                    st.success("âœ… Opening stock updated!")
+                    st.success("✅ Opening stock updated!")
                     st.rerun()
         else:
             st.info("No RM inventory data available")
 
     with tab2:
         st.markdown("### RM Stock Movement (Detailed)")
-        st.info("Filter by Party Category and Specific Party to view movement history.")
+        st.info("This shows only manual Purchase and Sales entries added by you.")
         
         # --- NEW FILTERS FOR RM MOVEMENT ---
+        st.markdown("#### 🔍 Filter Movements")
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            rm_mov_category = st.selectbox(
-                "Select Party Category", 
-                ["All", "Purchase Party", "Sales Party", "Contractor", "Moulder"], 
-                key="rm_mov_cat_filter"
-            )
-        
-        # Get parties based on category
-        if rm_mov_category == "All":
-            parties_df = fetch_data("SELECT DISTINCT party_name FROM rm_stock_movement s JOIN purchase_transactions p ON s.reference_id = p.id UNION SELECT DISTINCT party_name FROM sales_transactions")
-            # Note: Simplified party fetch for filter dropdown
-            all_parties = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
-            party_list_mov = ["All"] + (all_parties['party_name'].tolist() if not all_parties.empty else [])
-        else:
-            parties_df = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (rm_mov_category,))
-            party_list_mov = ["All"] + (parties_df['party_name'].tolist() if not parties_df.empty else [])
-            
+            rm_move_cat = st.selectbox("Select Party Category", 
+                                       ["All", "Purchase Party", "Sales Party", "Contractor", "Moulder"], 
+                                       key="rm_move_cat_filter")
         with col_f2:
-            rm_mov_party = st.selectbox("Select Party", party_list_mov, key="rm_mov_party_filter")
-
-        # Fetch products that have movement
-        df_products_mov = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
-        selected_product_mov = st.selectbox("Select Product to View Movement", df_products_mov['product_name'].tolist() if not df_products_mov.empty else [], key="rm_movement_product_sel")
-
-        if selected_product_mov:
-            # Build Query based on filters
-            # We need to join with transactions to get the Party Name associated with the Reference ID
-            query_mov = """
-            SELECT s.id, s.transaction_date, s.challan_no, s.transaction_type, s.qty, s.opening_balance, s.closing_balance,
-                   CASE 
-                       WHEN s.transaction_type = 'PURCHASE' THEN (SELECT party_name FROM purchase_transactions WHERE id = s.reference_id)
-                       WHEN s.transaction_type = 'SALE' THEN (SELECT party_name FROM sales_transactions WHERE id = s.reference_id)
-                       ELSE NULL
-                   END as party_name
-            FROM rm_stock_movement s
-            WHERE s.product_name = ? AND s.transaction_type IN ('PURCHASE', 'SALE')
+            rm_move_parties = get_parties_by_category(rm_move_cat)
+            rm_move_party = st.selectbox("Select Party Name", rm_move_parties, key="rm_move_party_filter")
+        
+        # Fetch products that have movement records
+        df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
+        if not df_products.empty:
+            selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
+            
+            # UPDATED QUERY: Join with purchase/sales tables to get Party Name if available via reference_id or challan
+            # Note: rm_stock_movement stores reference_id which links to purchase_transactions or sales_transactions
+            query_movement = """
+            SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, rsm.reference_id
+            FROM rm_stock_movement rsm
+            WHERE rsm.product_name = ? AND rsm.transaction_type IN ('PURCHASE', 'SALE')
             """
-            params_mov = [selected_product_mov]
-
-            if rm_mov_party != "All":
-                query_mov += """
+            params_movement = [selected_product]
+            
+            # If specific party selected, we need to join to find transactions associated with that party
+            if rm_move_party != "All":
+                # We join with purchase_transactions for PURCHASE type and sales_transactions for SALE type
+                query_movement = """
+                SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, rsm.reference_id
+                FROM rm_stock_movement rsm
+                LEFT JOIN purchase_transactions pt ON rsm.reference_id = pt.id AND rsm.transaction_type = 'PURCHASE'
+                LEFT JOIN sales_transactions st ON rsm.reference_id = st.id AND rsm.transaction_type = 'SALE'
+                WHERE rsm.product_name = ? 
+                AND rsm.transaction_type IN ('PURCHASE', 'SALE')
                 AND (
-                    (s.transaction_type = 'PURCHASE' AND s.reference_id IN (SELECT id FROM purchase_transactions WHERE party_name = ?))
+                    (rsm.transaction_type = 'PURCHASE' AND pt.party_name = ?)
                     OR
-                    (s.transaction_type = 'SALE' AND s.reference_id IN (SELECT id FROM sales_transactions WHERE party_name = ?))
+                    (rsm.transaction_type = 'SALE' AND st.party_name = ?)
                 )
                 """
-                params_mov.extend([rm_mov_party, rm_mov_party])
-
-            query_mov += " ORDER BY s.transaction_date, s.id"
+                params_movement = [selected_product, rm_move_party, rm_move_party]
             
-            df_movement = fetch_data(query_mov, tuple(params_mov))
-
+            query_movement += " ORDER BY rsm.transaction_date, rsm.id"
+            
+            df_movement = fetch_data(query_movement, tuple(params_movement))
+            
             if not df_movement.empty:
-                # Recalculate running balance locally to ensure consistency with filtered view if needed, 
-                # but usually we trust the stored closing_balance. 
-                # However, to show "Opening carried forward", we rely on the stored data.
+                # Enrich dataframe with Party Name for display
+                party_names = []
+                for _, row in df_movement.iterrows():
+                    p_name = "N/A"
+                    if row['transaction_type'] == 'PURCHASE' and pd.notna(row['reference_id']):
+                        res = fetch_data("SELECT party_name FROM purchase_transactions WHERE id = ?", (row['reference_id'],))
+                        if not res.empty: p_name = res['party_name'].iloc[0]
+                    elif row['transaction_type'] == 'SALE' and pd.notna(row['reference_id']):
+                        res = fetch_data("SELECT party_name FROM sales_transactions WHERE id = ?", (row['reference_id'],))
+                        if not res.empty: p_name = res['party_name'].iloc[0]
+                    party_names.append(p_name)
                 
-                df_display = df_movement[['transaction_date', 'challan_no', 'transaction_type', 'qty', 'party_name', 'opening_balance', 'closing_balance']]
-                df_display.columns = ['Date', 'Challan No', 'Type', 'Qty', 'Party Name', 'Opening Bal', 'Closing Bal']
+                df_movement['party_name'] = party_names
                 
+                opening_result = fetch_data("SELECT COALESCE(opening_stock, 0) as opening_stock FROM rm_inventory WHERE product_name = ?", (selected_product,))
+                opening_stock = opening_result['opening_stock'].iloc[0] if not opening_result.empty else 0
+                running_balance = opening_stock
+                opening_balances = []
+                closing_balances = []
+                
+                for idx, row in df_movement.iterrows():
+                    opening_balances.append(running_balance)
+                    if row['transaction_type'] == 'PURCHASE':
+                        running_balance += row['qty']
+                    elif row['transaction_type'] == 'SALE':
+                        running_balance -= row['qty']
+                    closing_balances.append(running_balance)
+                
+                df_movement['opening_balance'] = opening_balances
+                df_movement['closing_balance'] = closing_balances
+                
+                # Display the dataframe with Party Name
+                df_display = df_movement[['transaction_date', 'challan_no', 'party_name', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
                 st.dataframe(df_display, use_container_width=True)
                 
                 col1, col2, col3 = st.columns(3)
                 total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
                 total_sales = df_movement[df_movement['transaction_type']=='SALE']['qty'].sum()
-                # Show last closing balance as current status for this view
-                final_balance = df_movement.iloc[-1]['closing_balance'] if not df_movement.empty else 0
-                
+                final_balance = closing_balances[-1] if closing_balances else 0
                 with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
                 with col2: st.metric("Total Sales (RM)", f"{total_sales:,.0f}")
-                with col3: st.metric("Last Balance", f"{final_balance:,.0f}")
+                with col3: st.metric("Current Balance", f"{final_balance:,.0f}")
             else:
-                st.info("No Purchase or Sales movement records found for this selection.")
+                st.info("No Purchase or Sales movement records found for this product/filter.")
         else:
-            st.info("Select a product to view details.")
+            st.info("No RM stock movement data available")
 
     with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
-        # UPDATED QUERY: Join with sales/purchase to show last known party if possible, 
-        # but primarily FG inventory is aggregate. 
-        # To show "To Whom Sold", we usually look at recent sales. 
-        # Here we will just add a column showing the Last Sales Party if available.
+        # UPDATED QUERY: Join with sales_transactions to show last sold to / contractor if applicable
+        # Note: Since FG can be produced by contractors and sold to parties, we show a summary or last known interaction.
+        # For simplicity and performance, we will add a sub-query to find the most recent party associated with the product via Sales or Production.
         
         df_fg_inv = fetch_data("""
         SELECT i.product_name, i.opening_stock, i.produced_qty, i.purchased_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
@@ -2568,26 +2592,30 @@ elif page == "ðŸ“ˆ Inventory":
         """)
         
         if not df_fg_inv.empty:
+            # Enrich with Last Party Info
+            last_parties = []
+            for _, row in df_fg_inv.iterrows():
+                prod_name = row['product_name']
+                # Check Sales first
+                sale_res = fetch_data("SELECT party_name FROM sales_transactions WHERE product_name = ? ORDER BY date DESC LIMIT 1", (prod_name,))
+                if not sale_res.empty:
+                    last_parties.append(f"Sold to: {sale_res['party_name'].iloc[0]}")
+                else:
+                    # Check Production (Contractor)
+                    prod_res = fetch_data("SELECT party_name FROM production_register WHERE fg_product = ? ORDER BY date DESC LIMIT 1", (prod_name,))
+                    if not prod_res.empty:
+                        last_parties.append(f"Moulded by: {prod_res['party_name'].iloc[0]}")
+                    else:
+                        last_parties.append("N/A")
+            
+            df_fg_inv['Last Interaction'] = last_parties
+            
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total FG Products", len(df_fg_inv))
-            with col2: st.metric("Total Stock Value", f"â‚¹{(df_fg_inv['closing_stock'] * df_fg_inv['rate'].fillna(0)).sum():,.2f}")
+            with col2: st.metric("Total Stock Value", f"₹{(df_fg_inv['closing_stock'] * df_fg_inv['rate'].fillna(0)).sum():,.2f}")
             with col3: st.metric("Total Produced", f"{df_fg_inv['produced_qty'].sum():,.0f}")
             
-            # Enrich with Last Sales Party
-            enriched_rows = []
-            for _, row in df_fg_inv.iterrows():
-                last_sale = fetch_data("""
-                    SELECT party_name FROM sales_transactions 
-                    WHERE product_name = ? ORDER BY date DESC LIMIT 1
-                """, (row['product_name'],))
-                last_party = last_sale['party_name'].iloc[0] if not last_sale.empty else "N/A"
-                enriched_rows.append({
-                    **row.to_dict(),
-                    'Last Sold To': last_party
-                })
-            
-            df_fg_enriched = pd.DataFrame(enriched_rows)
-            st.dataframe(df_fg_enriched, use_container_width=True)
+            st.dataframe(df_fg_inv, use_container_width=True)
             
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
@@ -2601,60 +2629,33 @@ elif page == "ðŸ“ˆ Inventory":
                     SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                     WHERE product_name = ?
                     """, (fg_product,))
-                    st.success("âœ… Opening stock updated!")
+                    st.success("✅ Opening stock updated!")
                     st.rerun()
         else:
             st.info("No FG inventory data available")
 
     with tab4:
-        st.markdown("### ðŸ§® FG to RM Material Requirement Calculator")
+        st.markdown("### 🧮 FG to RM Material Requirement Calculator")
         st.markdown("---")
-        st.markdown("#### ðŸ“Š Sales-Based RM Requirements (Auto-Calculated from Sales)")
-        st.info("ðŸ’¡ This section automatically calculates RM requirements based on actual FG product sales. "
-                "When you sell FG products, the required RM materials are calculated using the BOM.")
+        st.markdown("#### 📊 Sales-Based RM Requirements (Auto-Calculated from Sales)")
+        st.info("💡 This section automatically calculates RM requirements based on actual FG product sales. "
+                "When you sell FG products, the required RM materials are calculated using the BOM (same logic as your Excel sheet).")
         
-        # --- NEW FILTERS FOR SALES BASED RM ---
-        col_sf1, col_sf2 = st.columns(2)
-        with col_sf1:
-            sales_rm_category = st.selectbox(
-                "Filter Sales By Party Category", 
-                ["All", "Sales Party", "Contractor", "Moulder"], 
-                key="sales_rm_cat_filter"
-            )
-        
-        if sales_rm_category == "All":
-            all_parties_sales = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
-            sales_party_list = ["All"] + (all_parties_sales['party_name'].tolist() if not all_parties_sales.empty else [])
-        else:
-            parties_sales = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (sales_rm_category,))
-            sales_party_list = ["All"] + (parties_sales['party_name'].tolist() if not parties_sales.empty else [])
-            
-        with col_sf2:
-            sales_rm_party = st.selectbox("Filter By Specific Party", sales_party_list, key="sales_rm_party_filter")
-
-        # Fetch FG Sales with Filters
-        query_sales = """
+        # Fetch all FG sales with FULL DETAILS
+        df_fg_sales = fetch_data("""
         SELECT st.id, st.challan_no, st.date, st.party_name, st.product_name,
         st.category, st.product_category, st.qty, st.unit, st.rate, st.amount,
         st.payment_terms_days, st.due_date
         FROM sales_transactions st
         JOIN product_master pm ON st.product_name = pm.product_name
         WHERE pm.category IN ('FG Product', 'Moulding Product')
-        """
-        params_sales = []
+        ORDER BY st.date DESC, st.id DESC
+        """)
         
-        if sales_rm_party != "All":
-            query_sales += " AND st.party_name = ?"
-            params_sales.append(sales_rm_party)
-            
-        query_sales += " ORDER BY st.date DESC, st.id DESC"
-        
-        df_fg_sales = fetch_data(query_sales, tuple(params_sales))
-
         if df_fg_sales.empty:
-            st.warning("âš ï¸ No FG product sales found for the selected filters.")
+            st.warning("⚠️ No FG product sales found yet. Sales-based RM calculation will appear here once you make sales.")
         else:
-            # Calculate RM requirements for all filtered sales
+            # Calculate RM requirements for all sales
             sales_rm_requirements = {}
             total_sales_value = 0.0
             
@@ -2684,7 +2685,7 @@ elif page == "ðŸ“ˆ Inventory":
                             'sale_id': sale_row['id'],
                             'challan_no': sale_row['challan_no'],
                             'date': sale_row['date'],
-                            'party_name': sale_row['party_name'], # Shows Contractor/Sales Party Name
+                            'party_name': sale_row['party_name'], # Contractor/Sales Party Name
                             'fg_product': fg_product,
                             'fg_qty_sold': fg_qty_sold,
                             'unit': sale_row['unit'],
@@ -2693,7 +2694,7 @@ elif page == "ðŸ“ˆ Inventory":
                             'rm_per_unit': rm_per_unit,
                             'rm_needed': rm_total_needed
                         })
-                        
+            
             if sales_rm_requirements:
                 sales_calc_rows = []
                 has_shortage = False
@@ -2713,61 +2714,93 @@ elif page == "ðŸ“ˆ Inventory":
                         rate = 0.0
                         
                     shortage = total_required - available
-                    status = "âœ… OK" if shortage <= 0 else "âŒ SHORTAGE"
+                    status = "✅ OK" if shortage <= 0 else "❌ SHORTAGE"
                     if shortage > 0: has_shortage = True
                     
                     unique_sales = len(set([b['sale_id'] for b in rm_data['breakdown']]))
                     
                     sales_calc_rows.append({
                         "RM Product": rm_name,
-                        "Total Required (Filtered Sales)": total_required,
+                        "Total Required (All Sales)": total_required,
                         "No. of Sales Transactions": unique_sales
                     })
                     total_sales_value += total_required * rate
-
+                
                 sales_calc_df = pd.DataFrame(sales_calc_rows)
                 
-                m1, m2, m3 = st.columns(3)
-                with m1: st.metric("ðŸ“¦ Total FG Sales (Filtered)", len(df_fg_sales))
-                with m2: st.metric("ðŸ”§ RM Types Required", len(sales_calc_rows))
-                with m3: st.metric("ðŸ’° Total RM Value", f"â‚¹{total_sales_value:,.2f}")
+                m1, m2, m3, m4 = st.columns(4)
+                with m1: st.metric("📦 Total FG Sales", len(df_fg_sales))
+                with m2: st.metric("🔧 RM Types Required", len(sales_calc_rows))
+                with m3: st.metric("💰 Total RM Value", f"₹{total_sales_value:,.2f}")
                 
-                st.dataframe(sales_calc_df, use_container_width=True, hide_index=True)
+                def highlight_status_sales(val):
+                    if val == "❌ SHORTAGE":
+                        return 'background-color: #ffebee; color: #c62828; font-weight: bold'
+                    else:
+                        return 'background-color: #e8f5e9; color: #2e7d32; font-weight: bold'
                 
-                if has_shortage:
-                    st.error(f"âš ï¸ **Shortage Alert:** Some RM materials are insufficient for the selected sales.")
+                if 'Status' in sales_calc_df.columns:
+                    try: styled_sales_df = sales_calc_df.style.map(highlight_status_sales, subset=['Status'])
+                    except AttributeError: styled_sales_df = sales_calc_df.style.applymap(highlight_status_sales, subset=['Status'])
+                    st.dataframe(styled_sales_df, use_container_width=True, hide_index=True)
                 else:
-                    st.success(f"âœ… **All RM materials available!**")
-                    
-                # Detailed Breakdown Expander
-                with st.expander("ðŸ” View Detailed RM Breakdown by Sale Transaction"):
+                    st.dataframe(sales_calc_df, use_container_width=True, hide_index=True)
+                
+                if has_shortage: pass
+                else: st.success(f"✅ **All RM materials available!** You have sufficient stock for all FG sales.")
+                
+                st.markdown("---")
+                st.markdown("#### 📋 Detailed Sales Transactions (FG Products)")
+                st.caption("Complete details of all FG product sales with challan numbers, dates, contractor names, and quantities")
+                
+                detailed_sales = df_fg_sales.copy()
+                detailed_sales = detailed_sales.rename(columns={
+                    'id': 'Sale ID', 'challan_no': 'Challan No', 'date': 'Date',
+                    'party_name': 'Contractor / Party', 'product_name': 'FG Product',
+                    'category': 'Entry Category', 'product_category': 'Product Category',
+                    'qty': 'Quantity', 'unit': 'Unit', 'rate': 'Rate (₹)',
+                    'amount': 'Amount (₹)', 'payment_terms_days': 'Payment Days', 'due_date': 'Due Date'
+                })
+                st.dataframe(detailed_sales, use_container_width=True, hide_index=True)
+                
+                st.markdown("#### 👥 Sales Summary by Contractor/Party")
+                contractor_summary = df_fg_sales.groupby('party_name').agg({
+                    'qty': 'sum', 'amount': 'sum', 'id': 'count'
+                }).reset_index()
+                contractor_summary.columns = ['Contractor / Party', 'Total FG Qty Sold', 'Total Sales Value (₹)', 'No. of Transactions']
+                contractor_summary = contractor_summary.sort_values('Total Sales Value (₹)', ascending=False)
+                st.dataframe(contractor_summary, use_container_width=True, hide_index=True)
+                
+                with st.expander("🔍 View Detailed RM Breakdown by Sale Transaction"):
+                    st.markdown("**RM Requirements Breakdown:**")
+                    st.caption("Shows which sale transactions contributed to each RM requirement")
                     for rm_name, rm_data in sales_rm_requirements.items():
-                        st.markdown(f"##### ðŸ”§ {rm_name}")
+                        st.markdown(f"##### 🔧 {rm_name}")
                         rm_breakdown_rows = []
                         for b in rm_data['breakdown']:
                             rm_breakdown_rows.append({
-                                "Sale ID": b['sale_id'],
-                                "Challan No": b['challan_no'],
-                                "Date": b['date'],
-                                "Contractor / Party": b['party_name'], # Explicitly showing name
-                                "FG Product": b['fg_product'],
-                                "FG Qty Sold": f"{b['fg_qty_sold']:.2f} {b['unit']}",
-                                "RM Required": f"{b['rm_needed']:.2f}"
+                                "Sale ID": b['sale_id'], "Challan No": b['challan_no'],
+                                "Date": b['date'], "Contractor / Party": b['party_name'],
+                                "FG Product": b['fg_product'], "FG Qty Sold": f"{b['fg_qty_sold']:.2f} {b['unit']}",
+                                "RM per FG Unit": f"{b['rm_per_unit']:.2f}", "RM Required": f"{b['rm_needed']:.2f}",
+                                "Sale Amount (₹)": f"₹{b['amount']:,.2f}"
                             })
-                        st.dataframe(pd.DataFrame(rm_breakdown_rows), use_container_width=True, hide_index=True)
-
-                # Consume Button Logic (Same as before)
+                        rm_breakdown_df = pd.DataFrame(rm_breakdown_rows)
+                        st.dataframe(rm_breakdown_df, use_container_width=True, hide_index=True)
+                        st.markdown(f"**Total RM Required: {rm_data['total_required']:.2f}**")
+                
                 st.markdown("---")
-                st.markdown("#### ðŸ’¾ Action: Consume RM Stock for Filtered Sales")
+                st.markdown("#### 💾 Action: Consume RM Stock for All Sales")
+                st.caption("Click below to deduct RM quantities for all FG sales from your inventory.")
                 consume_col1, consume_col2 = st.columns([3, 1])
                 with consume_col1:
-                    consume_reason_sales = st.text_input("Reason / Reference", key="consume_reason_sales_input_filtered", placeholder="e.g., MONTHLY-SALES-CONSUMPTION")
+                    consume_reason_sales = st.text_input("Reason / Reference", key="consume_reason_sales_input", placeholder="e.g., MONTHLY-SALES-CONSUMPTION")
                 with consume_col2:
-                    consume_date_sales = st.date_input("Date", datetime.now(), key="consume_date_sales_input_filtered")
-                    
-                if st.button(f"ðŸ’¥ Consume RM Stock for Filtered Sales", type="primary", key="consume_rm_sales_btn_filtered", disabled=has_shortage):
+                    consume_date_sales = st.date_input("Date", datetime.now(), key="consume_date_sales_input")
+                
+                if st.button(f"💥 Consume RM Stock for All FG Sales", type="primary", key="consume_rm_sales_btn", disabled=has_shortage):
                     if has_shortage:
-                        st.error("âŒ Cannot consume â€” shortage exists.")
+                        st.error("❌ Cannot consume — shortage exists. Please fix shortage first.")
                     else:
                         try:
                             consumed_list = []
@@ -2778,107 +2811,138 @@ elif page == "ðŸ“ˆ Inventory":
                                 rate = float(stock_df['rate'].iloc[0]) if not stock_df.empty and pd.notna(stock_df['rate'].iloc[0]) else 0.0
                                 update_rm_inventory(rm_name, qty_to_consume, 'CONSUMPTION', consume_date_sales.strftime('%Y-%m-%d'), ref_no, rate=rate)
                                 consumed_list.append(f"{rm_name}: {qty_to_consume:.2f}")
-                            st.success(f"âœ… RM stock consumed successfully!")
+                            st.success(f"✅ RM stock consumed successfully for all FG sales!")
+                            st.info("📋 **Consumed Items:**\n" + "\n".join([f"- {c}" for c in consumed_list]))
                             st.balloons()
                             st.rerun()
                         except Exception as e:
-                            st.error(f"âŒ Error consuming RM: {str(e)}")
+                            st.error(f"❌ Error consuming RM: {str(e)}")
             else:
-                 st.info("â„¹ï¸ No BOM defined for sold FG products in this selection.")
+                st.info("ℹ️ No BOM defined for sold FG products. Please add BOM entries in Masters → BOM tab.")
 
-        # Manual Calculator Section (Unchanged)
         st.markdown("---")
-        st.markdown("#### ðŸ§® Manual FG to RM Calculator")
-        df_fg_products_manual = fetch_data("""
+        st.markdown("#### 🧮 Manual FG to RM Calculator")
+        st.info("💡 Select OR type any FG product name and enter the quantity to calculate all required Raw Materials based on BOM.")
+        
+        df_fg_products = fetch_data("""
         SELECT product_name FROM product_master
         WHERE category IN ('FG Product', 'Moulding Product')
         ORDER BY product_name
         """)
-        fg_product_list_manual = df_fg_products_manual['product_name'].tolist() if not df_fg_products_manual.empty else []
+        fg_product_list = df_fg_products['product_name'].tolist() if not df_fg_products.empty else []
         
-        fg_input_mode = st.radio("How do you want to enter the FG Product?", ["Select from List", "Type Manually"], horizontal=True, key="fg_input_mode_manual")
+        fg_input_mode = st.radio("How do you want to enter the FG Product?",
+                                 ["Select from List", "Type Manually (Any FG Name)"],
+                                 horizontal=True, key="fg_input_mode")
         calc_fg_product = None
-        
         if fg_input_mode == "Select from List":
-            calc_fg_product = st.selectbox("ðŸ“¦ Select FG Product", fg_product_list_manual if fg_product_list_manual else ["No FG products"], key="calc_fg_product_select_manual")
+            if not fg_product_list:
+                st.warning("⚠️ No FG products found in masters.")
+            calc_fg_product = st.selectbox("📦 Select FG Product",
+                                           fg_product_list if fg_product_list else ["No FG products"],
+                                           key="calc_fg_product_select")
             if calc_fg_product == "No FG products": calc_fg_product = None
         else:
-            calc_fg_product = st.text_input("ðŸ“¦ Type FG Product Name", key="calc_fg_product_manual_manual", placeholder="e.g., 5A SSC with JB")
-            
+            calc_fg_product = st.text_input("📦 Type FG Product Name (must match BOM exactly)",
+                                            key="calc_fg_product_manual",
+                                            placeholder="e.g., 5A SSC with JB, TSSC, 15A DSSC with JB")
+        
         col_calc1, col_calc2 = st.columns([2, 1])
         with col_calc1:
-            calc_fg_qty = st.number_input("ðŸ”¢ Enter FG Quantity", min_value=0.0, step=1.0, value=1.0, key="calc_fg_qty_manual")
-            
-        if st.button("ðŸ”„ Calculate RM Requirements", type="primary", key="calc_rm_btn_manual"):
+            calc_fg_qty = st.number_input("🔢 Enter FG Quantity (Sales Qty)", min_value=0.0, step=1.0, value=1.0, key="calc_fg_qty")
+        
+        if st.button("🔄 Calculate RM Requirements", type="primary", key="calc_rm_btn"):
             if calc_fg_product and calc_fg_product.strip() and calc_fg_qty > 0:
                 calc_fg_product = calc_fg_product.strip()
-                bom_items = fetch_data("SELECT rm_product, required_qty FROM bom_master WHERE fg_product = ?", (calc_fg_product,))
+                bom_items = fetch_data("""
+                SELECT rm_product, required_qty
+                FROM bom_master
+                WHERE fg_product = ?
+                """, (calc_fg_product,))
                 
                 if bom_items.empty:
-                    st.warning(f"âš ï¸ No BOM defined for '{calc_fg_product}'.")
+                    st.warning(f"⚠️ No BOM defined for '{calc_fg_product}'. Please add BOM entries in Masters → BOM tab.")
+                    available_bom = fetch_data("SELECT DISTINCT fg_product FROM bom_master ORDER BY fg_product")
+                    if not available_bom.empty:
+                        st.markdown("**Available FG Products in BOM:**")
+                        st.dataframe(available_bom, use_container_width=True)
                 else:
-                    st.markdown(f"#### ðŸ“Š RM Requirements for **{calc_fg_qty} units** of **{calc_fg_product}**")
+                    st.markdown("---")
+                    st.markdown(f"#### 📊 RM Requirements for **{calc_fg_qty} units** of **{calc_fg_product}**")
                     calc_rows = []
                     total_rm_value = 0.0
                     has_shortage = False
-                    
                     for _, bom_row in bom_items.iterrows():
                         rm_name = bom_row['rm_product']
                         per_unit_req = float(bom_row['required_qty'])
                         total_required = per_unit_req * calc_fg_qty
-                        stock_df = fetch_data("SELECT closing_stock, COALESCE(rate, 0) as rate FROM rm_inventory WHERE product_name = ?", (rm_name,))
-                        
+                        stock_df = fetch_data("""
+                        SELECT closing_stock, COALESCE(rate, 0) as rate
+                        FROM rm_inventory
+                        WHERE product_name = ?
+                        """, (rm_name,))
                         if not stock_df.empty:
                             available = float(stock_df['closing_stock'].iloc[0]) if pd.notna(stock_df['closing_stock'].iloc[0]) else 0.0
                             rate = float(stock_df['rate'].iloc[0]) if pd.notna(stock_df['rate'].iloc[0]) else 0.0
                         else:
                             available = 0.0
                             rate = 0.0
-                            
                         shortage = total_required - available
-                        status = "âœ… OK" if shortage <= 0 else "âŒ SHORTAGE"
+                        status = "✅ OK" if shortage <= 0 else "❌ SHORTAGE"
                         if shortage > 0: has_shortage = True
-                        
                         calc_rows.append({
-                            "RM Product": rm_name,
-                            "Per FG Unit": per_unit_req,
+                            "RM Product": rm_name, "Per FG Unit": per_unit_req,
                             f"Required ({calc_fg_qty} FG)": total_required,
                             "Available Stock": available,
                             "Shortage (+) / Surplus (-)": shortage,
-                            "Rate (â‚¹)": rate,
-                            "Required Value (â‚¹)": total_required * rate,
+                            "Rate (₹)": rate, "Required Value (₹)": total_required * rate,
                             "Status": status
                         })
                         total_rm_value += total_required * rate
-                        
+                    
                     calc_df = pd.DataFrame(calc_rows)
-                    m1, m2, m3 = st.columns(3)
-                    with m1: st.metric("ðŸ“¦ Total RM Types", len(calc_rows))
-                    with m2: st.metric("ðŸ’° Total RM Value", f"â‚¹{total_rm_value:,.2f}")
-                    with m3: 
-                         shortage_items = len([r for r in calc_rows if r["Status"] == "âŒ SHORTAGE"])
-                         st.metric("âš ï¸ Items in Shortage", shortage_items)
-                         
+                    m1, m2, m3, m4 = st.columns(4)
+                    with m1: st.metric("📦 Total RM Types", len(calc_rows))
+                    with m2: st.metric("💰 Total RM Value", f"₹{total_rm_value:,.2f}")
+                    with m3:
+                        shortage_items = len([r for r in calc_rows if r["Status"] == "❌ SHORTAGE"])
+                        st.metric("⚠️ Items in Shortage", shortage_items)
+                    with m4:
+                        ok_items = len([r for r in calc_rows if r["Status"] == "✅ OK"])
+                        st.metric("✅ Items Available", ok_items)
+                    
                     def highlight_status(val):
-                        if val == "âŒ SHORTAGE": return 'background-color: #ffebee; color: #c62828; font-weight: bold'
-                        else: return 'background-color: #e8f5e9; color: #2e7d32; font-weight: bold'
-                        
+                        if val == "❌ SHORTAGE":
+                            return 'background-color: #ffebee; color: #c62828; font-weight: bold'
+                        else:
+                            return 'background-color: #e8f5e9; color: #2e7d32; font-weight: bold'
+                    
                     try: styled_df = calc_df.style.map(highlight_status, subset=['Status'])
                     except AttributeError: styled_df = calc_df.style.applymap(highlight_status, subset=['Status'])
-                    
                     st.dataframe(styled_df, use_container_width=True, hide_index=True)
                     
-                    if has_shortage: st.error(f"âš ï¸ **Shortage Alert:** {shortage_items} RM material(s) are insufficient.")
-                    else: st.success(f"âœ… **All RM materials available!**")
+                    if has_shortage:
+                        st.error(f"⚠️ **Shortage Alert:** {shortage_items} RM material(s) are insufficient for this FG quantity.")
+                    else:
+                        st.success(f"✅ **All RM materials available!** You have sufficient stock to produce/sell {calc_fg_qty} units of {calc_fg_product}.")
                     
                     st.markdown("---")
-                    st.markdown("#### ðŸ’¾ Action: Consume RM from Stock")
+                    st.markdown("#### 💾 Action: Consume RM from Stock")
+                    st.caption("Click below to actually deduct these RM quantities from your inventory (as if FG was produced/sold).")
                     consume_col1, consume_col2 = st.columns([3, 1])
-                    with consume_col1: consume_reason = st.text_input("Reason / Reference", key="consume_reason_input_manual", placeholder="e.g., SALE-001")
-                    with consume_col2: consume_date = st.date_input("Date", datetime.now(), key="consume_date_input_manual")
+                    with consume_col1:
+                        consume_reason = st.text_input("Reason / Reference (Challan No, Sale Ref, etc.)",
+                                                       key="consume_reason_input",
+                                                       placeholder="e.g., SALE-001, PROD-001")
+                    with consume_col2:
+                        consume_date = st.date_input("Date", datetime.now(), key="consume_date_input")
                     
-                    if st.button(f"ðŸ’¥ Consume RM Stock for {calc_fg_qty} x {calc_fg_product}", type="primary", key="consume_rm_stock_btn_manual", disabled=has_shortage):
-                        if has_shortage: st.error("âŒ Cannot consume â€” shortage exists.")
+                    if st.button(f"💥 Consume RM Stock for {calc_fg_qty} x {calc_fg_product}",
+                                 type="primary",
+                                 key="consume_rm_stock_btn",
+                                 disabled=has_shortage):
+                        if has_shortage:
+                            st.error("❌ Cannot consume — shortage exists. Please fix shortage first.")
                         else:
                             try:
                                 consumed_list = []
@@ -2886,13 +2950,14 @@ elif page == "ðŸ“ˆ Inventory":
                                 for _, row_data in calc_df.iterrows():
                                     rm_name = row_data["RM Product"]
                                     qty_to_consume = row_data[f"Required ({calc_fg_qty} FG)"]
-                                    update_rm_inventory(rm_name, qty_to_consume, 'CONSUMPTION', consume_date.strftime('%Y-%m-%d'), ref_no, rate=row_data["Rate (â‚¹)"])
+                                    update_rm_inventory(rm_name, qty_to_consume, 'CONSUMPTION', consume_date.strftime('%Y-%m-%d'), ref_no, rate=row_data["Rate (₹)"])
                                     consumed_list.append(f"{rm_name}: {qty_to_consume}")
-                                st.success(f"âœ… RM stock consumed successfully!")
+                                st.success(f"✅ RM stock consumed successfully for {calc_fg_qty} x {calc_fg_product}!")
+                                st.info("📋 **Consumed Items:**\n" + "\n".join([f"- {c}" for c in consumed_list]))
                                 st.balloons()
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"âŒ Error consuming RM: {str(e)}")
+                                st.error(f"❌ Error consuming RM: {str(e)}")
 # ======================= REPORTS =======================
 elif page == "📋 Reports":
     st.subheader("📋 Reports & Analytics")
