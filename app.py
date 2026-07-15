@@ -2389,7 +2389,6 @@ elif page == "⚠️ Rejections":
             st.dataframe(df_pr, use_container_width=True)
 
 # ======================= INVENTORY =======================
-# ======================= INVENTORY =======================
 elif page == "📈 Inventory":
     st.subheader("📈 Inventory Management")
     tab1, tab2, tab3, tab4 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory", "🧮 FG to RM Calculator"])
@@ -2506,14 +2505,6 @@ elif page == "📈 Inventory":
                     if row['transaction_type'] == 'PURCHASE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM purchase_transactions WHERE id = ?", (row['reference_id'],))
                         if not res.empty: 
-                            # Optional: Check if party exists in master to get latest name if renamed, 
-                            # but usually transaction table holds the snapshot. 
-                            # To support "Realtime Update" if Master changes, we rely on the fact that 
-                            # we might want to show the CURRENT name of the party involved.
-                            # However, standard accounting keeps historical names. 
-                            # Assuming user wants to see who it WAS, we use transaction table.
-                            # If user wants CURRENT name of that party ID, we'd need a Party ID column.
-                            # Since we only have Name, we show the name from the transaction.
                             p_name = res['party_name'].iloc[0]
                     elif row['transaction_type'] == 'SALE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM sales_transactions WHERE id = ?", (row['reference_id'],))
@@ -2626,7 +2617,7 @@ elif page == "📈 Inventory":
         st.info("💡 This section automatically calculates RM requirements based on actual FG product sales. "
                 "When you sell FG products, the required RM materials are calculated using the BOM (same logic as your Excel sheet).")
         
-        # Fetch all FG sales with FULL DETAILS
+        # Fetch all FG sales with FULL DETAILS including Party Name
         df_fg_sales = fetch_data("""
         SELECT st.id, st.challan_no, st.date, st.party_name, st.product_name,
         st.category, st.product_category, st.qty, st.unit, st.rate, st.amount,
