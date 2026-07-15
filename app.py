@@ -283,6 +283,10 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
     elif transaction_type == 'SALE': # If RM is sold directly
+        # CHECK FOR NEGATIVE STOCK
+        if opening_balance < qty:
+            raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
+            
         closing_balance = opening_balance - qty
         execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
     else:
@@ -318,33 +322,42 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT OR IGNORE INTO fg_inventory 
-            (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) 
-            VALUES (?, 0, 0, 0, 0, 0, 0)
+        INSERT OR IGNORE INTO fg_inventory
+        (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock)
+        VALUES (?, 0, 0, 0, 0, 0, 0)
         """, (product,))
         
+        # Get current closing stock to check for negatives
+        cursor.execute("SELECT COALESCE(closing_stock, 0) as cs FROM fg_inventory WHERE product_name = ?", (product,))
+        current_stock_row = cursor.fetchone()
+        current_stock = current_stock_row['cs'] if current_stock_row else 0
+
         if transaction_type == 'PRODUCE':
             cursor.execute("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (qty, product))
         elif transaction_type == 'SALE':
+            # CHECK FOR NEGATIVE STOCK
+            if current_stock < qty:
+                raise Exception(f"Insufficient FG Stock! Available: {current_stock}, Requested: {qty}")
             cursor.execute("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) + ? WHERE product_name = ?", (qty, product))
         elif transaction_type == 'REJECT':
+             # CHECK FOR NEGATIVE STOCK
+            if current_stock < qty:
+                raise Exception(f"Insufficient FG Stock for Rejection! Available: {current_stock}, Requested: {qty}")
             cursor.execute("UPDATE fg_inventory SET rejected_qty = COALESCE(rejected_qty, 0) + ? WHERE product_name = ?", (qty, product))
         elif transaction_type == 'PURCHASE':
             cursor.execute("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
             
         cursor.execute("""
-            UPDATE fg_inventory 
-            SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-            WHERE product_name = ?
+        UPDATE fg_inventory
+        SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+        WHERE product_name = ?
         """, (product,))
-        
         conn.commit()
     except Exception as e:
         conn.rollback()
-        st.error(f"Error updating FG Inventory: {e}")
+        raise e # Re-raise to be caught by the UI
     finally:
         conn.close()
-
 def consume_rm_for_fg_sale(fg_product, fg_qty, sale_date, challan_no, sale_id):
     """Automatically consume RM materials based on BOM when FG is sold"""
     bom_items = fetch_data("""
@@ -1153,312 +1166,274 @@ elif page == "📦 Masters":
         else:
             st.info("No BOM entries defined yet. Please add manually above.")
         # ======================= PURCHASE ENTRY =======================
+# ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
-        st.subheader("🛒 Purchase Entry")
-        
-        # Initialize session state for filters if not present
-        if 'pur_party_filter' not in st.session_state:
-            st.session_state.pur_party_filter = "Purchase Party"
-        if 'pur_prod_filter' not in st.session_state:
-            st.session_state.pur_prod_filter = "RM Product"
-
-        unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
-
-        st.markdown("### 🔍 Filters")
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            party_filter = st.selectbox(
-                "Select Party Type (Category)",
-                ["Purchase Party", "Moulder", "Contractor", "Powder", "All"],
-                key="pur_party_filter_select",
-                index=["Purchase Party", "Moulder", "Contractor", "Powder", "All"].index(st.session_state.pur_party_filter) if st.session_state.pur_party_filter in ["Purchase Party", "Moulder", "Contractor", "Powder", "All"] else 0
-            )
-            if party_filter != st.session_state.pur_party_filter:
-                st.session_state.pur_party_filter = party_filter
-                st.rerun()
-                
-        with col_f2:
-            prod_cat_filter = st.selectbox(
-                "Filter Product By Category",
-                ["RM Product", "FG Product", "Moulding Product", "Powder", "All"],
-                key="pur_prod_filter_select",
-                index=["RM Product", "FG Product", "Moulding Product", "Powder", "All"].index(st.session_state.pur_prod_filter) if st.session_state.pur_prod_filter in ["RM Product", "FG Product", "Moulding Product", "Powder", "All"] else 0
-            )
-            if prod_cat_filter != st.session_state.pur_prod_filter:
-                st.session_state.pur_prod_filter = prod_cat_filter
-                st.rerun()
-
-        st.markdown("---")
-
-        # Get dynamic lists based on filters
-        df_parties, _ = get_dynamic_lists(st.session_state.pur_party_filter)
-        party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
-        
-        _, df_products = get_dynamic_lists(st.session_state.pur_prod_filter)
-        product_list = df_products['product_name'].tolist() if not df_products.empty else []
-        
-        # Map product details for auto-filling rate/unit
-        product_details_map = dict(zip(df_products['product_name'], zip(df_products['rate'], df_products['unit'], df_products['category']))) if not df_products.empty else {}
-
-        with st.form("purchase_form"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                challan_no = st.text_input("Challan No *")
-                purchase_date = st.date_input("Date", datetime.now())
-                party = st.selectbox("Party/Moulder/Contractor", party_list if party_list else ["No parties added yet"])
-            
-            with col2:
-                product = st.selectbox("Product", product_list if product_list else ["No products found"])
-                
-                # Auto-fill details based on selection
-                rate_val = 0.0
-                unit_val = 'PCS'
-                actual_prod_cat = st.session_state.pur_prod_filter
-                
-                if product in product_details_map:
-                    r, u, c = product_details_map[product]
-                    rate_val = float(r) if pd.notna(r) else 0.0
-                    unit_val = u
-                    actual_prod_cat = c
-                
-                category = st.selectbox("Entry Category", ["Party", "Moulder", "Contractor", "Powder"], key="pur_entry_cat")
-                qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
-            
-            with col3:
-                unit = st.selectbox("Unit", unit_options, index=unit_options.index(unit_val) if unit_val in unit_options else 4)
-                rate = st.number_input("Rate per Unit", min_value=0.0, value=float(rate_val), step=0.01)
-                payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=60, step=1, key="pur_payment_days")
-
-            if qty and rate:
-                amount = qty * rate
-                st.metric("Total Amount", f"₹{amount:,.2f}")
-            else:
-                st.metric("Total Amount", "₹0.00")
-
-            # THIS IS THE MISSING SUBMIT BUTTON
-            submitted = st.form_submit_button("Save Purchase", type="primary")
-
+    st.subheader("🛒 Purchase Entry")
+    # Initialize session state for filters if not present
+    if 'pur_party_filter' not in st.session_state:
+        st.session_state.pur_party_filter = "Purchase Party"
+    if 'pur_prod_filter' not in st.session_state:
+        st.session_state.pur_prod_filter = "RM Product"
+    unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
+    st.markdown("### 🔍 Filters")
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        party_filter = st.selectbox(
+            "Select Party Type (Category)",
+            ["Purchase Party", "Moulder", "Contractor", "Powder", "All"],
+            key="pur_party_filter_select",
+            index=["Purchase Party", "Moulder", "Contractor", "Powder", "All"].index(st.session_state.pur_party_filter) if st.session_state.pur_party_filter in ["Purchase Party", "Moulder", "Contractor", "Powder", "All"] else 0
+        )
+        if party_filter != st.session_state.pur_party_filter:
+            st.session_state.pur_party_filter = party_filter
+            st.rerun()
+    with col_f2:
+        prod_cat_filter = st.selectbox(
+            "Filter Product By Category",
+            ["RM Product", "FG Product", "Moulding Product", "Powder", "All"],
+            key="pur_prod_filter_select",
+            index=["RM Product", "FG Product", "Moulding Product", "Powder", "All"].index(st.session_state.pur_prod_filter) if st.session_state.pur_prod_filter in ["RM Product", "FG Product", "Moulding Product", "Powder", "All"] else 0
+        )
+        if prod_cat_filter != st.session_state.pur_prod_filter:
+            st.session_state.pur_prod_filter = prod_cat_filter
+            st.rerun()
+    st.markdown("---")
+    # Get dynamic lists based on filters
+    df_parties, _ = get_dynamic_lists(st.session_state.pur_party_filter)
+    party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
+    _, df_products = get_dynamic_lists(st.session_state.pur_prod_filter)
+    product_list = df_products['product_name'].tolist() if not df_products.empty else []
+    # Map product details for auto-filling rate/unit
+    product_details_map = dict(zip(df_products['product_name'], zip(df_products['rate'], df_products['unit'], df_products['category']))) if not df_products.empty else {}
+    with st.form("purchase_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            challan_no = st.text_input("Challan No *")
+            purchase_date = st.date_input("Date", datetime.now())
+            party = st.selectbox("Party/Moulder/Contractor", party_list if party_list else ["No parties added yet"])
+        with col2:
+            product = st.selectbox("Product", product_list if product_list else ["No products found"])
+            # Auto-fill details based on selection
+            rate_val = 0.0
+            unit_val = 'PCS'
+            actual_prod_cat = st.session_state.pur_prod_filter
+            if product in product_details_map:
+                r, u, c = product_details_map[product]
+                rate_val = float(r) if pd.notna(r) else 0.0
+                unit_val = u
+                actual_prod_cat = c
+            category = st.selectbox("Entry Category", ["Party", "Moulder", "Contractor", "Powder"], key="pur_entry_cat")
+            qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
+        with col3:
+            unit = st.selectbox("Unit", unit_options, index=unit_options.index(unit_val) if unit_val in unit_options else 4)
+            rate = st.number_input("Rate per Unit", min_value=0.0, value=float(rate_val), step=0.01)
+            payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=60, step=1, key="pur_payment_days")
+        if qty and rate:
+            amount = qty * rate
+            st.metric("Total Amount", f"₹{amount:,.2f}")
+        else:
+            st.metric("Total Amount", "₹0.00")
+        # THIS IS THE MISSING SUBMIT BUTTON
+        submitted = st.form_submit_button("Save Purchase", type="primary")
         if submitted:
             if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
                 try:
-                    purchase_amount = qty * rate
-                    
-                    # 1. Save the transaction record
-                    purchase_id = execute_query('''INSERT INTO purchase_transactions
-                    (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, entry_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
-                    (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, purchase_amount))
-
-                    # 2. Update Inventory Based on Category
-                    if actual_prod_cat == 'RM Product':
-                        # FIX: Use 'PURCHASE' type to ADD stock to RM Inventory
-                        update_rm_inventory(product, qty, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id, rate=rate)
-                        
-                    elif actual_prod_cat in ['FG Product', 'Moulding Product', 'Powder']:
-                        # For FG/Moulding/Powder, add to FG Inventory as Purchased Stock
-                        update_fg_inventory(product, qty, 'PURCHASE')
-                    
-                    # 3. Create Payable Entry (Since we are Buying, we owe money)
-                    create_payable_entry(party, challan_no, purchase_date.strftime('%Y-%m-%d'), purchase_amount, payment_days)
-                    
-                    st.success(f"✅ Purchase entry saved successfully! Amount: ₹{purchase_amount:,.2f}")
-                    st.rerun()
-                    
+                    # CHECK UNIQUE CHALLAN NO
+                    existing_challan = fetch_data("SELECT id FROM purchase_transactions WHERE challan_no = ?", (challan_no,))
+                    if not existing_challan.empty:
+                        st.error(f"❌ Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
+                    else:
+                        purchase_amount = qty * rate
+                        # 1. Save the transaction record
+                        purchase_id = execute_query('''INSERT INTO purchase_transactions
+                        (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, entry_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
+                        (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, purchase_amount))
+                        # 2. Update Inventory Based on Category
+                        if actual_prod_cat == 'RM Product':
+                            # FIX: Use 'PURCHASE' type to ADD stock to RM Inventory
+                            update_rm_inventory(product, qty, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id, rate=rate)
+                        elif actual_prod_cat in ['FG Product', 'Moulding Product', 'Powder']:
+                            # For FG/Moulding/Powder, add to FG Inventory as Purchased Stock
+                            update_fg_inventory(product, qty, 'PURCHASE')
+                        # 3. Create Payable Entry (Since we are Buying, we owe money)
+                        create_payable_entry(party, challan_no, purchase_date.strftime('%Y-%m-%d'), purchase_amount, payment_days)
+                        st.success(f"✅ Purchase entry saved successfully! Amount: ₹{purchase_amount:,.2f}")
+                        st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
             else:
                 st.warning("Please fill all required fields")
-
-        st.markdown("---")
-        st.markdown("### 📋 Manage Purchase Entries")
-        df_all_purchases = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC")
-        if not df_all_purchases.empty:
-            purchase_options = [f"ID:{row['id']} | {row['challan_no']} | {row['product_name']} | {row['qty']} {row['unit']} | ₹{row['amount']:,.2f} | {row['date']}" for _, row in df_all_purchases.iterrows()]
-            selected_purchase = st.selectbox("Select Purchase Entry to Edit/Delete", purchase_options, key="select_purchase_manage")
-            selected_id = int(selected_purchase.split('|')[0].replace('ID:', '').strip()) if selected_purchase else None
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✏️ Edit Selected Purchase", type="primary", key="edit_purchase_btn"):
-                    st.session_state.edit_mode = True
-                    st.session_state.edit_id = selected_id
-                    st.session_state.edit_table = 'purchase'
-                    st.rerun()
-            with col2:
-                if st.button("🗑️ Delete Selected Purchase", key="delete_purchase_btn"):
-                    if st.session_state.get('confirm_delete_purchase'):
-                        record = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (selected_id,))
-                        if not record.empty:
-                            product = record['product_name'].iloc[0]
-                            qty = record['qty'].iloc[0]
-                            prod_cat = record['product_category'].iloc[0]
-                            
-                            if prod_cat == 'RM Product':
-                                execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                                execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (qty, product))
-                                execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
-                                
-                                # Recalculate running balance for RM movements
-                                movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
-                                if not movements.empty:
-                                    running_balance = calculate_rm_opening_balance(product, movements['transaction_date'].iloc[0])
-                                    for _, mov in movements.iterrows():
-                                        if mov['transaction_type'] == 'PURCHASE':
-                                            running_balance += mov['qty']
-                                        elif mov['transaction_type'] == 'CONSUMPTION':
-                                            running_balance -= mov['qty']
-                                        execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
-                            else:
-                                execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                                execute_query("""
-                                UPDATE fg_inventory
-                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                WHERE product_name = ?
-                                """, (product,))
-                            
-                            execute_query("DELETE FROM purchase_transactions WHERE id = ?", (selected_id,))
-                            st.success("✅ Purchase entry deleted and inventory updated!")
-                            st.session_state['confirm_delete_purchase'] = False
-                            st.rerun()
-                    else:
-                        st.session_state['confirm_delete_purchase'] = True
-                        st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
-
-        if st.session_state.edit_mode and st.session_state.edit_table == 'purchase':
-            st.markdown("### ✏️ Edit Purchase Entry")
-            purchase_data = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (st.session_state.edit_id,))
-            if not purchase_data.empty:
-                row = purchase_data.iloc[0]
-                
-                # Re-fetch lists for editing context
-                df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Purchase Party", "Moulder", "Contractor", "Powder"] else "All")
-                party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
-                
-                df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else "All")
-                product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
-                
-                with st.form("edit_purchase_form"):
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        edit_challan = st.text_input("Challan No", value=row['challan_no'], key="edit_pur_challan")
-                        edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_pur_date")
-                        edit_party = st.selectbox("Party", 
-                                                party_list_edit if party_list_edit else [row['party_name']], 
-                                                index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0, 
-                                                key="edit_pur_party")
-                    with col2:
-                        edit_product = st.selectbox("Product", 
-                                                    product_list_edit if product_list_edit else [row['product_name']], 
-                                                    index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0, 
-                                                    key="edit_pur_product")
-                        edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"], 
-                                                   index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0, 
-                                                   key="edit_pur_category")
-                        edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"], 
-                                                           index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 2, 
-                                                           key="edit_pur_prod_cat")
-                        edit_qty = st.number_input("Quantity *", min_value=0.0, value=float(row['qty']), step=1.0, key="edit_pur_qty")
-                    with col3:
-                        edit_unit = st.selectbox("Unit", unit_options, 
-                                               index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4, 
-                                               key="edit_pur_unit")
-                        edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_pur_rate")
-                    
-                    if edit_qty and edit_rate:
-                        amount = edit_qty * edit_rate
-                        st.metric("Total Amount", f"₹{amount:,.2f}")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.form_submit_button("💾 Save Changes", type="primary"):
-                            old_qty = row['qty']
-                            old_product = row['product_name']
-                            old_prod_cat = row['product_category']
-                            old_date = row['date']
-                            old_challan = row['challan_no']
-                            
-                            qty_diff = edit_qty - old_qty
-                            
-                            # Update Transaction Record
-                            execute_query('''UPDATE purchase_transactions SET
-                            challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?
-                            WHERE id=?''',
-                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
-                            
-                            # Update Inventory Logic
-                            if old_product == edit_product and old_prod_cat == edit_product_category:
-                                if qty_diff != 0:
-                                    if old_prod_cat == 'RM Product':
-                                        execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                        execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                        
-                                        # Update Movement Record
-                                        execute_query("UPDATE rm_stock_movement SET qty = ?, closing_balance = closing_balance + ? WHERE reference_id = ? AND transaction_type = 'PURCHASE'", 
-                                                      (edit_qty, qty_diff, st.session_state.edit_id))
-                                        
-                                        # Recalculate subsequent balances
-                                        movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? AND transaction_date >= ? ORDER BY transaction_date, id", (edit_product, old_date))
-                                        if not movements.empty:
-                                            running_balance = calculate_rm_opening_balance(edit_product, movements['transaction_date'].iloc[0])
-                                            for _, mov in movements.iterrows():
-                                                if mov['transaction_type'] == 'PURCHASE':
-                                                    running_balance += mov['qty']
-                                                elif mov['transaction_type'] == 'CONSUMPTION':
-                                                    running_balance -= mov['qty']
-                                                execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
-                                    else:
-                                        execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                        execute_query("""
-                                        UPDATE fg_inventory
-                                        SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                        WHERE product_name = ?
-                                        """, (edit_product,))
-                            else:
-                                # Product Changed: Revert Old, Add New
+    st.markdown("---")
+    st.markdown("### 📋 Manage Purchase Entries")
+    df_all_purchases = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC")
+    if not df_all_purchases.empty:
+        purchase_options = [f"ID:{row['id']} | {row['challan_no']} | {row['product_name']} | {row['qty']} {row['unit']} | ₹{row['amount']:,.2f} | {row['date']}" for _, row in df_all_purchases.iterrows()]
+        selected_purchase = st.selectbox("Select Purchase Entry to Edit/Delete", purchase_options, key="select_purchase_manage")
+        selected_id = int(selected_purchase.split('|')[0].replace('ID:', '').strip()) if selected_purchase else None
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✏️ Edit Selected Purchase", type="primary", key="edit_purchase_btn"):
+                st.session_state.edit_mode = True
+                st.session_state.edit_id = selected_id
+                st.session_state.edit_table = 'purchase'
+                st.rerun()
+        with col2:
+            if st.button("🗑️ Delete Selected Purchase", key="delete_purchase_btn"):
+                if st.session_state.get('confirm_delete_purchase'):
+                    record = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (selected_id,))
+                    if not record.empty:
+                        product = record['product_name'].iloc[0]
+                        qty = record['qty'].iloc[0]
+                        prod_cat = record['product_category'].iloc[0]
+                        if prod_cat == 'RM Product':
+                            execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
+                            execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (qty, product))
+                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
+                            # Recalculate running balance for RM movements
+                            movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
+                            if not movements.empty:
+                                running_balance = calculate_rm_opening_balance(product, movements['transaction_date'].iloc[0])
+                                for _, mov in movements.iterrows():
+                                    if mov['transaction_type'] == 'PURCHASE':
+                                        running_balance += mov['qty']
+                                    elif mov['transaction_type'] == 'CONSUMPTION':
+                                        running_balance -= mov['qty']
+                                    execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
+                        else:
+                            execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
+                            execute_query("""
+                            UPDATE fg_inventory
+                            SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                            WHERE product_name = ?
+                            """, (product,))
+                        execute_query("DELETE FROM purchase_transactions WHERE id = ?", (selected_id,))
+                        st.success("✅ Purchase entry deleted and inventory updated!")
+                        st.session_state['confirm_delete_purchase'] = False
+                        st.rerun()
+                else:
+                    st.session_state['confirm_delete_purchase'] = True
+                    st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
+    if st.session_state.edit_mode and st.session_state.edit_table == 'purchase':
+        st.markdown("### ✏️ Edit Purchase Entry")
+        purchase_data = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (st.session_state.edit_id,))
+        if not purchase_data.empty:
+            row = purchase_data.iloc[0]
+            # Re-fetch lists for editing context
+            df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Purchase Party", "Moulder", "Contractor", "Powder"] else "All")
+            party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
+            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else "All")
+            product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
+            with st.form("edit_purchase_form"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    edit_challan = st.text_input("Challan No", value=row['challan_no'], key="edit_pur_challan")
+                    edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_pur_date")
+                    edit_party = st.selectbox("Party",
+                    party_list_edit if party_list_edit else [row['party_name']],
+                    index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                    key="edit_pur_party")
+                with col2:
+                    edit_product = st.selectbox("Product",
+                    product_list_edit if product_list_edit else [row['product_name']],
+                    index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
+                    key="edit_pur_product")
+                    edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"],
+                    index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
+                    key="edit_pur_category")
+                    edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
+                    index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 2,
+                    key="edit_pur_prod_cat")
+                    edit_qty = st.number_input("Quantity *", min_value=0.0, value=float(row['qty']), step=1.0, key="edit_pur_qty")
+                with col3:
+                    edit_unit = st.selectbox("Unit", unit_options,
+                    index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                    key="edit_pur_unit")
+                    edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_pur_rate")
+                if edit_qty and edit_rate:
+                    amount = edit_qty * edit_rate
+                    st.metric("Total Amount", f"₹{amount:,.2f}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.form_submit_button("💾 Save Changes", type="primary"):
+                        old_qty = row['qty']
+                        old_product = row['product_name']
+                        old_prod_cat = row['product_category']
+                        old_date = row['date']
+                        old_challan = row['challan_no']
+                        qty_diff = edit_qty - old_qty
+                        # Update Transaction Record
+                        execute_query('''UPDATE purchase_transactions SET
+                        challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?
+                        WHERE id=?''',
+                        (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
+                        # Update Inventory Logic
+                        if old_product == edit_product and old_prod_cat == edit_product_category:
+                            if qty_diff != 0:
                                 if old_prod_cat == 'RM Product':
-                                    execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                                    execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                                    execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
-                                    
-                                    movements_old = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (old_product,))
-                                    if not movements_old.empty:
-                                        running_balance = calculate_rm_opening_balance(old_product, movements_old['transaction_date'].iloc[0])
-                                        for _, mov in movements_old.iterrows():
+                                    execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
+                                    execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
+                                    # Update Movement Record
+                                    execute_query("UPDATE rm_stock_movement SET qty = ?, closing_balance = closing_balance + ? WHERE reference_id = ? AND transaction_type = 'PURCHASE'",
+                                    (edit_qty, qty_diff, st.session_state.edit_id))
+                                    # Recalculate subsequent balances
+                                    movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? AND transaction_date >= ? ORDER BY transaction_date, id", (edit_product, old_date))
+                                    if not movements.empty:
+                                        running_balance = calculate_rm_opening_balance(edit_product, movements['transaction_date'].iloc[0])
+                                        for _, mov in movements.iterrows():
                                             if mov['transaction_type'] == 'PURCHASE':
                                                 running_balance += mov['qty']
                                             elif mov['transaction_type'] == 'CONSUMPTION':
                                                 running_balance -= mov['qty']
                                             execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
                                 else:
-                                    execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                                    execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                     execute_query("""
                                     UPDATE fg_inventory
                                     SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                     WHERE product_name = ?
-                                    """, (old_product,))
-                                
-                                # Add New Product Inventory
-                                if edit_product_category == 'RM Product':
-                                    execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
-                                    update_rm_inventory(edit_product, edit_qty, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, edit_rate)
-                                else:
-                                    execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
-                                    update_fg_inventory(edit_product, edit_qty, 'PURCHASE')
-                            
-                            st.success("✅ Purchase entry updated successfully!")
-                            st.session_state.edit_mode = False
-                            st.session_state.edit_id = None
-                            st.rerun()
-                    with col2:
-                        if st.form_submit_button("❌ Cancel"):
-                            st.session_state.edit_mode = False
-                            st.session_state.edit_id = None
-                            st.rerun()
-        
-        st.markdown("### All Purchase Entries")
-        st.dataframe(df_all_purchases, use_container_width=True)
-        st.metric("Total Purchase Value", f"₹{df_all_purchases['amount'].sum():,.2f}")
+                                    """, (edit_product,))
+                        else:
+                            # Product Changed: Revert Old, Add New
+                            if old_prod_cat == 'RM Product':
+                                execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
+                                movements_old = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (old_product,))
+                                if not movements_old.empty:
+                                    running_balance = calculate_rm_opening_balance(old_product, movements_old['transaction_date'].iloc[0])
+                                    for _, mov in movements_old.iterrows():
+                                        if mov['transaction_type'] == 'PURCHASE':
+                                            running_balance += mov['qty']
+                                        elif mov['transaction_type'] == 'CONSUMPTION':
+                                            running_balance -= mov['qty']
+                                        execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
+                            else:
+                                execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("""
+                                UPDATE fg_inventory
+                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                                WHERE product_name = ?
+                                """, (old_product,))
+                            # Add New Product Inventory
+                            if edit_product_category == 'RM Product':
+                                execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
+                                update_rm_inventory(edit_product, edit_qty, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, edit_rate)
+                            else:
+                                execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
+                                update_fg_inventory(edit_product, edit_qty, 'PURCHASE')
+                        st.success("✅ Purchase entry updated successfully!")
+                        st.session_state.edit_mode = False
+                        st.session_state.edit_id = None
+                        st.rerun()
+                with col2:
+                    if st.form_submit_button("❌ Cancel"):
+                        st.session_state.edit_mode = False
+                        st.session_state.edit_id = None
+                        st.rerun()
+    st.markdown("### All Purchase Entries")
+    st.dataframe(df_all_purchases, use_container_width=True)
+    st.metric("Total Purchase Value", f"₹{df_all_purchases['amount'].sum():,.2f}")
 # ======================= PRODUCTION ENTRY =======================
 elif page == "🏭 Production Entry":
     st.subheader("🏭 Production Entry")
@@ -1663,21 +1638,20 @@ elif page == "🏭 Production Entry":
     st.dataframe(df_all_production, use_container_width=True)
 
 # ======================= SALES ENTRY =======================
+# ======================= SALES ENTRY =======================
 elif page == "💰 Sales Entry":
     st.subheader("💰 Sales Entry")
     if 'sale_party_filter' not in st.session_state:
         st.session_state.sale_party_filter = "Sales Party"
     if 'sale_prod_filter' not in st.session_state:
         st.session_state.sale_prod_filter = "FG Product"
-
     unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
-    
     st.markdown("### 🔍 Filters")
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         party_filter = st.selectbox(
-            "Select Party Type (Category)", 
-            ["Sales Party", "Purchase Party", "Moulder", "Contractor", "All"], 
+            "Select Party Type (Category)",
+            ["Sales Party", "Purchase Party", "Moulder", "Contractor", "All"],
             key="sale_party_filter_select",
             index=["Sales Party", "Purchase Party", "Moulder", "Contractor", "All"].index(st.session_state.sale_party_filter) if st.session_state.sale_party_filter in ["Sales Party", "Purchase Party", "Moulder", "Contractor", "All"] else 0
         )
@@ -1686,24 +1660,20 @@ elif page == "💰 Sales Entry":
             st.rerun()
     with col_f2:
         prod_cat_filter = st.selectbox(
-            "Filter Product By Category", 
-            ["FG Product", "Moulding Product", "RM Product", "Powder", "All"], 
+            "Filter Product By Category",
+            ["FG Product", "Moulding Product", "RM Product", "Powder", "All"],
             key="sale_prod_filter_select",
             index=["FG Product", "Moulding Product", "RM Product", "Powder", "All"].index(st.session_state.sale_prod_filter) if st.session_state.sale_prod_filter in ["FG Product", "Moulding Product", "RM Product", "Powder", "All"] else 0
         )
         if prod_cat_filter != st.session_state.sale_prod_filter:
             st.session_state.sale_prod_filter = prod_cat_filter
             st.rerun()
-            
     st.markdown("---")
-    
     df_parties, _ = get_dynamic_lists(st.session_state.sale_party_filter)
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
-    
     _, df_products = get_dynamic_lists(st.session_state.sale_prod_filter)
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
     product_details_map = dict(zip(df_products['product_name'], zip(df_products['rate'], df_products['unit'], df_products['category']))) if not df_products.empty else {}
-
     with st.form("sales_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1720,68 +1690,62 @@ elif page == "💰 Sales Entry":
                 rate_val = float(r) if pd.notna(r) else 0.0
                 unit_val = u
                 actual_prod_cat = c
-                
             category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"])
             qty = st.number_input("Quantity *", min_value=0.0, step=1.0)
         with col3:
             unit = st.selectbox("Unit", unit_options, index=unit_options.index(unit_val) if unit_val in unit_options else 4)
             rate = st.number_input("Rate per Unit", min_value=0.0, value=float(rate_val), step=0.01)
             payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=60, step=1)
-            
-            if qty and rate:
-                amount = qty * rate
-                st.metric("Total Amount", f"₹{amount:,.2f}")
-            else:
-                st.metric("Total Amount", "₹0.00")
-                
+        if qty and rate:
+            amount = qty * rate
+            st.metric("Total Amount", f"₹{amount:,.2f}")
+        else:
+            st.metric("Total Amount", "₹0.00")
         submitted = st.form_submit_button("Save Sale", type="primary")
         if submitted:
             if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
-                available = 0.0
-                if actual_prod_cat == 'RM Product':
-                    df_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
-                    if not df_stock.empty:
-                        val = df_stock['closing_stock'].iloc[0]
-                        available = float(val) if pd.notna(val) else 0.0
-                else:
-                    df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
-                    if not df_stock.empty:
-                        val = df_stock['closing_stock'].iloc[0]
-                        available = float(val) if pd.notna(val) else 0.0
+                try:
+                    # CHECK UNIQUE CHALLAN NO
+                    existing_challan = fetch_data("SELECT id FROM sales_transactions WHERE challan_no = ?", (challan_no,))
+                    if not existing_challan.empty:
+                        st.error(f"❌ Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
+                    else:
+                        available = 0.0
+                        if actual_prod_cat == 'RM Product':
+                            df_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
+                            if not df_stock.empty:
+                                val = df_stock['closing_stock'].iloc[0]
+                                available = float(val) if pd.notna(val) else 0.0
+                        else:
+                            df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
+                            if not df_stock.empty:
+                                val = df_stock['closing_stock'].iloc[0]
+                                available = float(val) if pd.notna(val) else 0.0
                         
-                if available < qty:
-                    st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
-                else:
-                    try:
-                        sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
-                        due_date = sale_date_dt + timedelta(days=payment_days)
-                        sale_amount = qty * rate
-                        
-                        execute_query('''INSERT INTO sales_transactions 
+                        if available < qty:
+                            st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
+                        else:
+                            sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
+                            due_date = sale_date_dt + timedelta(days=payment_days)
+                            sale_amount = qty * rate
+                            execute_query('''INSERT INTO sales_transactions
                             (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                             (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
-                        
-                        sale_id = execute_query('''SELECT last_insert_rowid()''', ())
-                        
-                        
-                                
-                        if actual_prod_cat == 'RM Product':
-                            update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, rate=rate)
-                        else:
-                            update_fg_inventory(product, qty, 'SALE')
-                            
-                        create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
-                        
-                        st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
-                        if consumed_items:
-                            st.info(f"📦 RM materials consumed automatically based on BOM")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
+                            sale_id = execute_query('''SELECT last_insert_rowid()''', ())
+                            if actual_prod_cat == 'RM Product':
+                                update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, rate=rate)
+                            else:
+                                update_fg_inventory(product, qty, 'SALE')
+                            create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
+                            st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
+                            if 'consumed_items' in locals() and consumed_items:
+                                st.info(f"📦 RM materials consumed automatically based on BOM")
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
             else:
                 st.warning("Please fill all required fields")
-
     st.markdown("---")
     st.markdown("### 📝 Manage Sales Entries")
     df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date FROM sales_transactions ORDER BY date DESC")
@@ -1789,7 +1753,6 @@ elif page == "💰 Sales Entry":
         sales_options = [f"ID:{row['id']} | {row['challan_no']} | {row['product_name']} | {row['qty']} {row['unit']} | ₹{row['amount']:,.2f} | {row['party_name']} | {row['date']}" for _, row in df_all_sales.iterrows()]
         selected_sale = st.selectbox("Select Sales Entry to Edit/Delete", sales_options, key="select_sale_manage")
         selected_id = int(selected_sale.split('|')[0].replace('ID:', '').strip()) if selected_sale else None
-        
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✏️ Edit Selected Sale", type="primary", key="edit_sale_btn"):
@@ -1807,7 +1770,6 @@ elif page == "💰 Sales Entry":
                         prod_cat = record['product_category'].iloc[0]
                         challan_no_del = record['challan_no'].iloc[0]
                         party_name_del = record['party_name'].iloc[0]
-                        
                         # Update Inventory
                         if prod_cat == 'RM Product':
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (qty, product))
@@ -1815,19 +1777,17 @@ elif page == "💰 Sales Entry":
                         else:
                             execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (qty, product))
                             execute_query("""
-                                UPDATE fg_inventory 
-                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                WHERE product_name = ?
+                            UPDATE fg_inventory
+                            SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                            WHERE product_name = ?
                             """, (product,))
-                        
                         # Delete from Ledger (Fix for Realtime Update)
                         execute_query("""
-                            DELETE FROM payable_receivable_ledger 
-                            WHERE transaction_type = 'RECEIVABLE' 
-                            AND challan_no = ? 
-                            AND party_name = ?
+                        DELETE FROM payable_receivable_ledger
+                        WHERE transaction_type = 'RECEIVABLE'
+                        AND challan_no = ?
+                        AND party_name = ?
                         """, (challan_no_del, party_name_del))
-                        
                         execute_query("DELETE FROM sales_transactions WHERE id = ?", (selected_id,))
                         st.success("✅ Sales entry deleted, inventory updated, and ledger cleared!")
                         st.session_state['confirm_delete_sale'] = False
@@ -1835,7 +1795,6 @@ elif page == "💰 Sales Entry":
                 else:
                     st.session_state['confirm_delete_sale'] = True
                     st.warning("⚠️ Click again to confirm deletion. This will reverse inventory and ledger changes.")
-
     if st.session_state.edit_mode and st.session_state.edit_table == 'sale':
         st.markdown("### ✏️ Edit Sales Entry")
         sales_data = fetch_data("SELECT * FROM sales_transactions WHERE id = ?", (st.session_state.edit_id,))
@@ -1843,42 +1802,38 @@ elif page == "💰 Sales Entry":
             row = sales_data.iloc[0]
             df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Sales Party", "Purchase Party", "Moulder", "Contractor"] else "All")
             party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
-            
             df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
             product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
-            
             with st.form("edit_sale_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     edit_challan = st.text_input("Challan No", value=row['challan_no'], key="edit_sale_challan")
                     edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_sale_date")
-                    edit_party = st.selectbox("Sales Party", 
-                        party_list_edit if party_list_edit else [row['party_name']], 
-                        index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
-                        key="edit_sale_party")
+                    edit_party = st.selectbox("Sales Party",
+                    party_list_edit if party_list_edit else [row['party_name']],
+                    index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                    key="edit_sale_party")
                 with col2:
-                    edit_product = st.selectbox("Product", 
-                        product_list_edit if product_list_edit else [row['product_name']], 
-                        index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
-                        key="edit_sale_product")
-                    edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"], 
-                        index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
-                        key="edit_sale_category")
-                    edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"], 
-                        index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
-                        key="edit_sale_prod_cat")
+                    edit_product = st.selectbox("Product",
+                    product_list_edit if product_list_edit else [row['product_name']],
+                    index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
+                    key="edit_sale_product")
+                    edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"],
+                    index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
+                    key="edit_sale_category")
+                    edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
+                    index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
+                    key="edit_sale_prod_cat")
                     edit_qty = st.number_input("Quantity *", min_value=0.0, value=float(row['qty']), step=1.0, key="edit_sale_qty")
                 with col3:
-                    edit_unit = st.selectbox("Unit", unit_options, 
-                        index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
-                        key="edit_sale_unit")
+                    edit_unit = st.selectbox("Unit", unit_options,
+                    index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                    key="edit_sale_unit")
                     edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_sale_rate")
                     edit_payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=int(row['payment_terms_days']) if pd.notna(row['payment_terms_days']) else 60, step=1, key="edit_sale_payment_days")
-                    
-                    if edit_qty and edit_rate:
-                        amount = edit_qty * edit_rate
-                        st.metric("Total Amount", f"₹{amount:,.2f}")
-                
+                if edit_qty and edit_rate:
+                    amount = edit_qty * edit_rate
+                    st.metric("Total Amount", f"₹{amount:,.2f}")
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.form_submit_button("💾 Save Changes", type="primary"):
@@ -1888,18 +1843,15 @@ elif page == "💰 Sales Entry":
                         old_challan = row['challan_no']
                         old_party = row['party_name']
                         old_amount = row['amount']
-                        
                         qty_diff = edit_qty - old_qty
                         new_amount = edit_qty * edit_rate
                         amount_diff = new_amount - old_amount
-                        
                         # 1. Update Sales Transaction
                         execute_query('''UPDATE sales_transactions SET
                         challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
                         WHERE id=?''',
                         (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
                         (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d'), st.session_state.edit_id))
-    
                         # 2. Update Inventory (Reverse Old, Apply New)
                         if old_product == edit_product and old_prod_cat == edit_product_category:
                             if qty_diff != 0:
@@ -1927,7 +1879,6 @@ elif page == "💰 Sales Entry":
                                 SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                 WHERE product_name = ?
                                 """, (old_product,))
-                            
                             # Apply New Product
                             if edit_product_category == 'RM Product':
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
@@ -1936,20 +1887,17 @@ elif page == "💰 Sales Entry":
                             else:
                                 execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                 update_fg_inventory(edit_product, edit_qty, 'SALE')
-    
                         # 3. DIRECTLY UPDATE LEDGER (Receivables)
                         # We identify the ledger entry by Challan No and Party Name associated with this Sale ID
                         # First, delete the old ledger entry to avoid duplicates if Challan/Party changed
                         execute_query("""
-                        DELETE FROM payable_receivable_ledger 
-                        WHERE transaction_type = 'RECEIVABLE' 
-                        AND challan_no = ? 
+                        DELETE FROM payable_receivable_ledger
+                        WHERE transaction_type = 'RECEIVABLE'
+                        AND challan_no = ?
                         AND party_name = ?
                         """, (old_challan, old_party))
-                        
                         # Create new updated ledger entry
                         create_receivable_entry(edit_party, edit_challan, edit_date.strftime('%Y-%m-%d'), new_amount, edit_payment_days)
-    
                         st.success("✅ Sales entry, Inventory, and Ledger updated successfully!")
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
@@ -1959,12 +1907,9 @@ elif page == "💰 Sales Entry":
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
                         st.rerun()
-
     st.markdown("### All Sales Entries")
     st.dataframe(df_all_sales, use_container_width=True)
     st.metric("Total Sales Value", f"₹{df_all_sales['amount'].sum():,.2f}")
-
-# ======================= PAYABLE/RECEIVABLE LEDGER =======================
 # ======================= PAYABLE/RECEIVABLE LEDGER =======================
 elif page == "📒 Payable/Receivable Ledger":
     st.subheader("📒 Payable/Receivable Ledger")
