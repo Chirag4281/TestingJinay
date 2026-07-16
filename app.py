@@ -167,22 +167,33 @@ def init_db():
 
 def get_dynamic_lists(filter_type="All"):
     """Helper to get filtered lists for dynamic dropdowns"""
-    if filter_type == "All":
-        df_parties = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
-        df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
-    else:
-        if filter_type in ["Purchase Party", "Moulder", "Contractor", "Powder", "Sales Party"]:
-            df_parties = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (filter_type,))
+    try:
+        if filter_type == "All":
+            df_parties = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
+            df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
         else:
+            if filter_type in ["Purchase Party", "Moulder", "Contractor", "Powder", "Sales Party"]:
+                df_parties = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (filter_type,))
+            else:
+                df_parties = pd.DataFrame(columns=['party_name'])
+                
+            if filter_type in ["RM Product", "FG Product", "Moulding Product", "Powder"]:
+                df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master WHERE category = ? ORDER BY product_name", (filter_type,))
+            else:
+                df_products = pd.DataFrame(columns=['product_name', 'rate', 'unit', 'category'])
+        
+        # Ensure columns exist even if DataFrame is empty or malformed
+        if df_parties.empty and 'party_name' not in df_parties.columns:
             df_parties = pd.DataFrame(columns=['party_name'])
             
-        if filter_type in ["RM Product", "FG Product", "Moulding Product", "Powder"]:
-            df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master WHERE category = ? ORDER BY product_name", (filter_type,))
-        else:
+        if df_products.empty and 'product_name' not in df_products.columns:
             df_products = pd.DataFrame(columns=['product_name', 'rate', 'unit', 'category'])
             
-    return df_parties, df_products
-
+        return df_parties, df_products
+    except Exception as e:
+        st.error(f"Error in get_dynamic_lists: {e}")
+        # Return safe empty DataFrames on error
+        return pd.DataFrame(columns=['party_name']), pd.DataFrame(columns=['product_name', 'rate', 'unit', 'category'])
 def migrate_database(cursor):
     """Migrate database schema to handle column name changes"""
     try:
@@ -1340,8 +1351,12 @@ elif page == "🛒 Purchase Entry":
             # Re-fetch lists for editing context
             df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Purchase Party", "Moulder", "Contractor", "Powder"] else "All")
             party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
-            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else "All")
-            product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
+            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
+        # Safe access to product_name column
+            if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
+                product_list_edit = df_products_edit['product_name'].tolist()
+            else:
+                product_list_edit = []
             with st.form("edit_purchase_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -1606,8 +1621,11 @@ elif page == "🏭 Production Entry":
             party_list_edit = df_parties_edit_all['party_name'].tolist() if not df_parties_edit_all.empty else []
             
             df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
-            product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
-            
+        # Safe access to product_name column
+            if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
+                product_list_edit = df_products_edit['product_name'].tolist()
+            else:
+                product_list_edit = []
             with st.form("edit_production_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -1862,8 +1880,12 @@ elif page == "💰 Sales Entry":
             row = sales_data.iloc[0]
             df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Sales Party", "Purchase Party", "Moulder", "Contractor"] else "All")
             party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
-            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
-            product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
+            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else "All")
+        # Safe access to product_name column
+            if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
+                product_list_edit = df_products_edit['product_name'].tolist()
+            else:
+                product_list_edit = []
             with st.form("edit_sale_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
