@@ -19,7 +19,7 @@ def init_db():
     """Initialize database with all required tables"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
+
     # Master Tables
     cursor.execute('''CREATE TABLE IF NOT EXISTS party_master (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +31,7 @@ def init_db():
         address TEXT,
         gst_no TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS product_master (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         product_name TEXT UNIQUE NOT NULL,
@@ -44,14 +44,14 @@ def init_db():
         dimension_l REAL,
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS bom_master (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         fg_product TEXT NOT NULL,
         rm_product TEXT NOT NULL,
         required_qty REAL NOT NULL DEFAULT 1,
         UNIQUE(fg_product, rm_product))''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS payable_receivable_ledger (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         transaction_type TEXT NOT NULL,
@@ -65,7 +65,7 @@ def init_db():
         payment_status TEXT DEFAULT 'PENDING',
         remarks TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         challan_no TEXT NOT NULL,
@@ -80,7 +80,7 @@ def init_db():
         amount REAL DEFAULT 0,
         entry_type TEXT DEFAULT 'PURCHASE',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS sales_transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         challan_no TEXT NOT NULL,
@@ -96,7 +96,7 @@ def init_db():
         payment_terms_days INTEGER DEFAULT 60,
         due_date TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS production_register (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         challan_no TEXT,
@@ -108,7 +108,7 @@ def init_db():
         unit TEXT,
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS market_rejection_register (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
@@ -118,7 +118,7 @@ def init_db():
         reason TEXT,
         challan_ref TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS party_rejection_register (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
@@ -128,7 +128,7 @@ def init_db():
         reason TEXT,
         challan_ref TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS rm_inventory (
         product_name TEXT PRIMARY KEY,
         opening_stock REAL DEFAULT 0,
@@ -137,7 +137,7 @@ def init_db():
         closing_stock REAL DEFAULT 0,
         rate REAL DEFAULT 0,
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS rm_stock_movement (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         transaction_date TEXT NOT NULL,
@@ -149,7 +149,7 @@ def init_db():
         closing_balance REAL DEFAULT 0,
         reference_id INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS fg_inventory (
         product_name TEXT PRIMARY KEY,
         opening_stock REAL DEFAULT 0,
@@ -159,7 +159,7 @@ def init_db():
         purchased_qty REAL DEFAULT 0,
         closing_stock REAL DEFAULT 0,
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
+
     conn.commit()
     migrate_database(cursor)
     conn.commit()
@@ -167,33 +167,22 @@ def init_db():
 
 def get_dynamic_lists(filter_type="All"):
     """Helper to get filtered lists for dynamic dropdowns"""
-    try:
-        if filter_type == "All":
-            df_parties = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
-            df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
+    if filter_type == "All":
+        df_parties = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
+        df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master ORDER BY product_name")
+    else:
+        if filter_type in ["Purchase Party", "Moulder", "Contractor", "Powder", "Sales Party"]:
+            df_parties = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (filter_type,))
         else:
-            if filter_type in ["Purchase Party", "Moulder", "Contractor", "Powder", "Sales Party"]:
-                df_parties = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (filter_type,))
-            else:
-                df_parties = pd.DataFrame(columns=['party_name'])
-                
-            if filter_type in ["RM Product", "FG Product", "Moulding Product", "Powder"]:
-                df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master WHERE category = ? ORDER BY product_name", (filter_type,))
-            else:
-                df_products = pd.DataFrame(columns=['product_name', 'rate', 'unit', 'category'])
-        
-        # Ensure columns exist even if DataFrame is empty or malformed
-        if df_parties.empty and 'party_name' not in df_parties.columns:
             df_parties = pd.DataFrame(columns=['party_name'])
-            
-        if df_products.empty and 'product_name' not in df_products.columns:
+
+        if filter_type in ["RM Product", "FG Product", "Moulding Product", "Powder"]:
+            df_products = fetch_data("SELECT product_name, rate, unit, category FROM product_master WHERE category = ? ORDER BY product_name", (filter_type,))
+        else:
             df_products = pd.DataFrame(columns=['product_name', 'rate', 'unit', 'category'])
-            
-        return df_parties, df_products
-    except Exception as e:
-        st.error(f"Error in get_dynamic_lists: {e}")
-        # Return safe empty DataFrames on error
-        return pd.DataFrame(columns=['party_name']), pd.DataFrame(columns=['product_name', 'rate', 'unit', 'category'])
+
+    return df_parties, df_products
+
 def migrate_database(cursor):
     """Migrate database schema to handle column name changes"""
     try:
@@ -203,7 +192,7 @@ def migrate_database(cursor):
             cursor.execute("ALTER TABLE sales_transactions ADD COLUMN payment_terms_days INTEGER DEFAULT 60")
         if 'due_date' not in columns:
             cursor.execute("ALTER TABLE sales_transactions ADD COLUMN due_date TEXT")
-            
+
         cursor.execute("PRAGMA table_info(rm_inventory)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'rate' not in columns:
@@ -212,17 +201,17 @@ def migrate_database(cursor):
             cursor.execute("ALTER TABLE rm_inventory RENAME COLUMN purchased_qty TO total_purchased_qty")
         if 'consumed_qty' in columns and 'total_consumed_qty' not in columns:
             cursor.execute("ALTER TABLE rm_inventory RENAME COLUMN consumed_qty TO total_consumed_qty")
-            
+
         cursor.execute("PRAGMA table_info(purchase_transactions)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'product_category' not in columns:
             cursor.execute("ALTER TABLE purchase_transactions ADD COLUMN product_category TEXT")
-            
+
         cursor.execute("PRAGMA table_info(sales_transactions)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'product_category' not in columns:
             cursor.execute("ALTER TABLE sales_transactions ADD COLUMN product_category TEXT")
-            
+
         cursor.execute("PRAGMA table_info(production_register)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'qty_produced' in columns and 'produced_qty' not in columns:
@@ -235,12 +224,12 @@ def migrate_database(cursor):
             cursor.execute("ALTER TABLE production_register ADD COLUMN party_name TEXT")
         if 'produced_qty' not in columns and 'qty_produced' not in columns:
             cursor.execute("ALTER TABLE production_register ADD COLUMN produced_qty REAL NOT NULL DEFAULT 0")
-            
+
         cursor.execute("PRAGMA table_info(fg_inventory)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'purchased_qty' not in columns:
             cursor.execute("ALTER TABLE fg_inventory ADD COLUMN purchased_qty REAL DEFAULT 0")
-            
+
     except Exception as e:
         print(f"Migration warning: {e}")
 
@@ -295,7 +284,7 @@ def calculate_rm_opening_balance(product_name, before_date=None):
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
-    
+
     # Logic: Only Purchase adds stock. Sale removes stock.
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
@@ -304,7 +293,7 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
         # CHECK FOR NEGATIVE STOCK
         if opening_balance < qty:
             raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
-            
+
         closing_balance = opening_balance - qty
         execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
     else:
@@ -316,40 +305,53 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
     (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
-    
+
     result = fetch_data("""
     SELECT COALESCE(opening_stock, 0) as opening_stock,
     COALESCE(total_purchased_qty, 0) as total_purchased,
     COALESCE(total_consumed_qty, 0) as total_consumed
     FROM rm_inventory WHERE product_name = ?
     """, (product,))
-    
+
     if not result.empty:
         opening = result['opening_stock'].iloc[0]
         purchased = result['total_purchased'].iloc[0]
         consumed = result['total_consumed'].iloc[0] 
         closing_stock = opening + purchased - consumed
         execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))
-        
+
     if rate > 0:
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
-        
+
     return closing_balance
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        # Ensure product exists in inventory table
         # Ensure product exists
         cursor.execute("""
             INSERT OR IGNORE INTO fg_inventory
             (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock)
             VALUES (?, 0, 0, 0, 0, 0, 0)
         """, (product,))
-        
+
+        # Recalculate current closing stock from components to ensure accuracy
+        cursor.execute("""
+            SELECT COALESCE(opening_stock,0) + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) 
+                   - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0) as calculated_stock
+            FROM fg_inventory WHERE product_name = ?
+        """, (product,))
+        row = cursor.fetchone()
+        current_calculated_stock = row['calculated_stock'] if row else 0
+
         if transaction_type == 'PRODUCE':
             cursor.execute("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (qty, product))
-        
+
         elif transaction_type == 'SALE':
+            # Check against the freshly calculated stock
+            if current_calculated_stock < qty:
+                raise Exception(f"Insufficient FG Stock! Available: {current_calculated_stock}, Requested: {qty}")
             # Check stock before selling
             cursor.execute("SELECT COALESCE(opening_stock,0) + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0) as calc_stock FROM fg_inventory WHERE product_name = ?", (product,))
             row = cursor.fetchone()
@@ -359,8 +361,10 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
                 raise Exception(f"Insufficient FG Stock! Available: {current_stock}, Requested: {qty}")
             
             cursor.execute("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) + ? WHERE product_name = ?", (qty, product))
-        
+
         elif transaction_type == 'REJECT':
+            if current_calculated_stock < qty:
+                raise Exception(f"Insufficient FG Stock for Rejection! Available: {current_calculated_stock}, Requested: {qty}")
              # Check stock before rejecting
             cursor.execute("SELECT COALESCE(opening_stock,0) + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0) as calc_stock FROM fg_inventory WHERE product_name = ?", (product,))
             row = cursor.fetchone()
@@ -370,17 +374,18 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
                 raise Exception(f"Insufficient FG Stock for Rejection! Available: {current_stock}, Requested: {qty}")
                 
             cursor.execute("UPDATE fg_inventory SET rejected_qty = COALESCE(rejected_qty, 0) + ? WHERE product_name = ?", (qty, product))
-        
+
         elif transaction_type == 'PURCHASE':
             cursor.execute("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
 
+        # Final recalculation of closing_stock to keep it in sync
         # FORCE REAL-TIME CALCULATION OF CLOSING STOCK
         cursor.execute("""
             UPDATE fg_inventory
             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
             WHERE product_name = ?
         """, (product,))
-        
+
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -394,28 +399,28 @@ def consume_rm_for_fg_sale(fg_product, fg_qty, sale_date, challan_no, sale_id):
         FROM bom_master 
         WHERE fg_product = ?
     """, (fg_product,))
-    
+
     if bom_items.empty:
         return []
-        
+
     consumed_items = []
     for _, bom_row in bom_items.iterrows():
         rm_product = bom_row['rm_product']
         rm_qty_needed = bom_row['required_qty'] * fg_qty
-        
+
         rm_check = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_product,))
         if rm_check.empty:
             st.warning(f"⚠️ RM Product '{rm_product}' not found in inventory!")
             continue
-            
+
         available_stock = rm_check['closing_stock'].iloc[0]
         if available_stock < rm_qty_needed:
             st.warning(f"⚠️ Insufficient stock for {rm_product}! Available: {available_stock}, Required: {rm_qty_needed}")
             continue
-            
+
         update_rm_inventory(rm_product, rm_qty_needed, 'CONSUMPTION', sale_date, challan_no, sale_id)
         consumed_items.append(f"{rm_product}: {rm_qty_needed}")
-        
+
     return consumed_items
 
 def calculate_rm_for_fg(fg_product, fg_qty):
@@ -425,10 +430,10 @@ def calculate_rm_for_fg(fg_product, fg_qty):
         FROM bom_master 
         WHERE fg_product = ?
     """, (fg_product,))
-    
+
     if bom_items.empty:
         return []
-        
+
     rm_details = []
     for _, bom_row in bom_items.iterrows():
         rm_product = bom_row['rm_product']
@@ -438,17 +443,17 @@ def calculate_rm_for_fg(fg_product, fg_qty):
             'qty_needed': rm_qty_needed,
             'required_per_unit': bom_row['required_qty']
         })
-        
+
     return rm_details
 
 def create_receivable_entry(party_name, challan_no, invoice_date, amount, payment_days=60):
     """Create receivable entry in ledger"""
     if isinstance(invoice_date, str):
         invoice_date = datetime.strptime(invoice_date, '%Y-%m-%d')
-    
+
     due_date = invoice_date + timedelta(days=payment_days)
     due_date_str = due_date.strftime('%Y-%m-%d')
-    
+
     execute_query('''INSERT INTO payable_receivable_ledger 
         (transaction_type, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -459,10 +464,10 @@ def create_payable_entry(party_name, challan_no, invoice_date, amount, payment_d
     """Create payable entry in ledger when purchase is made"""
     if isinstance(invoice_date, str):
         invoice_date = datetime.strptime(invoice_date, '%Y-%m-%d')
-        
+
     due_date = invoice_date + timedelta(days=payment_days)
     due_date_str = due_date.strftime('%Y-%m-%d')
-    
+
     execute_query('''INSERT INTO payable_receivable_ledger 
         (transaction_type, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -501,37 +506,37 @@ def check_overdue_payables():
 def import_rm_sheet(df):
     records_imported = 0
     product_cols = df.columns[3:].tolist()
-    
+
     for idx, row in df.iterrows():
         challan_no = str(row.get('Challan no.', '')).strip()
         if pd.isna(challan_no) or challan_no.upper() in ['OB', 'NAN', '']:
             continue
-            
+
         date = row.get('Date')
         if isinstance(date, pd.Timestamp):
             date = date.strftime('%Y-%m-%d')
         elif pd.isna(date):
             date = datetime.now().strftime('%Y-%m-%d')
-            
+
         contractor = str(row.get('Contractor', '')).strip()
         if contractor:
             execute_query("INSERT OR IGNORE INTO party_master (party_name, category) VALUES (?, 'Contractor')", (contractor,))
-            
+
         for col in product_cols:
             qty = row.get(col)
             if pd.notna(qty) and isinstance(qty, (int, float)) and qty > 0:
                 product = str(col).strip()
                 execute_query("INSERT OR IGNORE INTO product_master (product_name, category) VALUES (?, 'RM Product')", (product,))
                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
-                
+
                 purchase_id = execute_query('''INSERT INTO purchase_transactions 
                     (challan_no, date, party_name, product_name, qty, entry_type, product_category)
                     VALUES (?, ?, ?, ?, ?, 'PURCHASE', 'RM Product')''',
                     (challan_no, date, contractor, product, float(qty)))
-                    
+
                 update_rm_inventory(product, float(qty), 'PURCHASE', date, challan_no, purchase_id)
                 records_imported += 1
-                
+
     return records_imported
 
 def import_fg_sheet(df):
@@ -540,14 +545,14 @@ def import_fg_sheet(df):
         sr_no = row.get('Sr. No.')
         if pd.isna(sr_no):
             continue
-            
+
         product = str(row.get('Products', '')).strip()
         if not product or product.upper() == 'NAN':
             continue
-            
+
         execute_query("INSERT OR IGNORE INTO product_master (product_name, category) VALUES (?, 'FG Product')", (product,))
         execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (product,))
-        
+
         contractors = ['Arun Bhai', 'Sanjay', 'Shailesh S', 'Sandeep', 'Vijay', 'Manish', 'Suresh', 'Vilas', 'Sunil', 'Vachan Sing']
         for contractor in contractors:
             if contractor in df.columns:
@@ -560,7 +565,7 @@ def import_fg_sheet(df):
                         (datetime.now().strftime('%Y-%m-%d'), contractor, product, float(qty)))
                     update_fg_inventory(product, float(qty), 'PRODUCE')
                     records_imported += 1
-                    
+
         sales_cols = ['W Sales', 'B Sales', 'Total Sales']
         for col in sales_cols:
             if col in df.columns:
@@ -574,7 +579,7 @@ def import_fg_sheet(df):
                         ('FG-IMPORT', datetime.now().strftime('%Y-%m-%d'), party, product, float(qty)))
                     update_fg_inventory(product, float(qty), 'SALE')
                     records_imported += 1
-                    
+
         if 'Difference (Actual Sold- Production)' in df.columns:
             diff = row.get('Difference (Actual Sold- Production)')
             if pd.notna(diff) and isinstance(diff, (int, float)) and diff < 0:
@@ -584,7 +589,7 @@ def import_fg_sheet(df):
                     (datetime.now().strftime('%Y-%m-%d'), product, abs(float(diff)), 'Import - Stock Difference'))
                 update_fg_inventory(product, abs(float(diff)), 'REJECT')
                 records_imported += 1
-                
+
     return records_imported
 
 def import_mr_pr_sheets(df, sheet_type='MR'):
@@ -593,11 +598,11 @@ def import_mr_pr_sheets(df, sheet_type='MR'):
         sr_no = row.get('Sr. No.')
         if pd.isna(sr_no):
             continue
-            
+
         product = str(row.get('Products', '')).strip()
         if not product or product.upper() == 'NAN':
             continue
-            
+
         parties = ['Arun Bhai', 'Sanjay', 'Shailesh S', 'Sandeep', 'Vijay', 'Manish', 'Suresh', 'Vilas', 'Sunil', 'Vachan sing']
         for party in parties:
             if party in df.columns:
@@ -615,7 +620,7 @@ def import_mr_pr_sheets(df, sheet_type='MR'):
                             VALUES (?, ?, ?, ?)''',
                             (datetime.now().strftime('%Y-%m-%d'), party, product, float(qty)))
                     records_imported += 1
-                    
+
     return records_imported
 
 def load_excel_data(file):
@@ -626,22 +631,22 @@ def load_excel_data(file):
             rm_df = pd.read_excel(xls, 'RM', header=0)
             rm_count = import_rm_sheet(rm_df)
             messages.append(f"✅ RM Sheet: {rm_count} purchase records imported")
-            
+
         if 'FG' in xls.sheet_names:
             fg_df = pd.read_excel(xls, 'FG', header=0)
             fg_count = import_fg_sheet(fg_df)
             messages.append(f"✅ FG Sheet: {fg_count} production/sales records imported")
-            
+
         if 'MR' in xls.sheet_names:
             mr_df = pd.read_excel(xls, 'MR', header=0)
             mr_count = import_mr_pr_sheets(mr_df, 'MR')
             messages.append(f"✅ MR Sheet: {mr_count} market rejection records imported")
-            
+
         if 'PR' in xls.sheet_names:
             pr_df = pd.read_excel(xls, 'PR', header=0)
             pr_count = import_mr_pr_sheets(pr_df, 'PR')
             messages.append(f"✅ PR Sheet: {pr_count} party rejection records imported")
-            
+
         return messages
     except Exception as e:
         return [f"❌ Error importing Excel: {str(e)}"]
@@ -651,31 +656,31 @@ def export_to_excel():
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_rm = fetch_data("SELECT * FROM rm_inventory ORDER BY product_name")
         df_rm.to_excel(writer, sheet_name='RM Inventory', index=False)
-        
+
         df_fg = fetch_data("SELECT * FROM fg_inventory ORDER BY product_name")
         df_fg.to_excel(writer, sheet_name='FG Inventory', index=False)
-        
+
         df_pur = fetch_data("SELECT * FROM purchase_transactions ORDER BY date DESC")
         df_pur.to_excel(writer, sheet_name='Purchases', index=False)
-        
+
         df_sal = fetch_data("SELECT * FROM sales_transactions ORDER BY date DESC")
         df_sal.to_excel(writer, sheet_name='Sales', index=False)
-        
+
         df_prod = fetch_data("SELECT * FROM production_register ORDER BY date DESC")
         df_prod.to_excel(writer, sheet_name='Production', index=False)
-        
+
         df_mr = fetch_data("SELECT * FROM market_rejection_register ORDER BY date DESC")
         df_mr.to_excel(writer, sheet_name='Market Rejections', index=False)
-        
+
         df_pr = fetch_data("SELECT * FROM party_rejection_register ORDER BY date DESC")
         df_pr.to_excel(writer, sheet_name='Party Rejections', index=False)
-        
+
         df_bom = fetch_data("SELECT * FROM bom_master ORDER BY fg_product, rm_product")
         df_bom.to_excel(writer, sheet_name='BOM Master', index=False)
-        
+
         df_ledger = fetch_data("SELECT * FROM payable_receivable_ledger ORDER BY due_date")
         df_ledger.to_excel(writer, sheet_name='Payable_Receivable_Ledger', index=False)
-        
+
     output.seek(0)
     return output
 
@@ -772,7 +777,7 @@ with st.sidebar:
 # ======================= DASHBOARD =======================
 if page == "📊 Dashboard":
     st.markdown('<h1 class="main-header">🏭 Jinay ERP Dashboard</h1>', unsafe_allow_html=True)
-    
+
     overdue_payments = check_overdue_payments()
     if not overdue_payments.empty:
         st.error(f"⚠️ **ALERT: {len(overdue_payments)} Overdue Payment(s) Found!**")
@@ -791,7 +796,7 @@ if page == "📊 Dashboard":
     df_fg_products = fetch_data("SELECT COUNT(*) as count FROM product_master WHERE category IN ('FG Product', 'Moulding Product', 'Powder')")
     df_total_production = fetch_data("SELECT SUM(produced_qty) as total FROM production_register")
     df_total_sales = fetch_data("SELECT SUM(qty) as total_qty FROM sales_transactions")
-    
+
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("RM Products", df_rm_products['count'].iloc[0] if not df_rm_products.empty else 0)
@@ -815,7 +820,7 @@ if page == "📊 Dashboard":
             st.line_chart(df_chart.set_index('date')['production'])
         else:
             st.info("No production data")
-            
+
     with col2:
         st.subheader("🏆 Top Contractors")
         df_contractors_prod = fetch_data("""
@@ -851,7 +856,7 @@ if page == "📊 Dashboard":
 elif page == "📦 Masters":
     st.subheader("📦 Master Management")
     tab1, tab2, tab3 = st.tabs(["👥 Parties (All Types)", "📦 Products", "🔧 BOM (Bill of Materials)"])
-    
+
     with tab1:
         st.markdown("### Add New Party (Party/Moulder/Contractor)")
         col1, col2 = st.columns(2)
@@ -864,7 +869,7 @@ elif page == "📦 Masters":
             email = st.text_input("Email", key="party_email")
             address = st.text_area("Address", key="party_address")
             gst_no = st.text_input("GST Number", key="party_gst_no")
-            
+
         if st.button("Add Party", type="primary", key="add_party_btn"):
             if party_name:
                 try:
@@ -883,7 +888,7 @@ elif page == "📦 Masters":
         df_parties = fetch_data("SELECT * FROM party_master ORDER BY party_name")
         if not df_parties.empty:
             st.dataframe(df_parties, use_container_width=True)
-            
+
         st.markdown("### Edit/Delete Party")
         col1, col2 = st.columns(2)
         with col1:
@@ -919,7 +924,7 @@ elif page == "📦 Masters":
                         edit_email = st.text_input("Email", value=party_data['email'].iloc[0] if pd.notna(party_data['email'].iloc[0]) else "", key="edit_party_email_field")
                         edit_address = st.text_area("Address", value=party_data['address'].iloc[0] if pd.notna(party_data['address'].iloc[0]) else "", key="edit_party_address_field")
                         edit_gst_no = st.text_input("GST Number", value=party_data['gst_no'].iloc[0] if pd.notna(party_data['gst_no'].iloc[0]) else "", key="edit_party_gst_field")
-                    
+
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.form_submit_button("💾 Save Changes", type="primary"):
@@ -951,7 +956,7 @@ elif page == "📦 Masters":
             dim_w = st.number_input("Dimension W", min_value=0.0, step=0.01, key="product_dim_w")
             dim_l = st.number_input("Dimension L", min_value=0.0, step=0.01, key="product_dim_l")
             description = st.text_area("Description", key="product_desc")
-            
+
         if st.button("Add Product", type="primary", key="add_product_btn"):
             if product_name:
                 try:
@@ -959,12 +964,12 @@ elif page == "📦 Masters":
                         (product_name, category, unit, rate, per_pc_wt, dimension_h, dimension_w, dimension_l, description)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (product_name, product_category, unit, rate, per_pc_wt, dim_h, dim_w, dim_l, description))
-                    
+
                     if product_category == 'RM Product':
                         execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product_name,))
                     else:
                         execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (product_name,))
-                        
+
                     st.success(f"✅ Product '{product_name}' added successfully!")
                     st.rerun()
                 except Exception as e:
@@ -976,7 +981,7 @@ elif page == "📦 Masters":
         df_products = fetch_data("SELECT * FROM product_master ORDER BY product_name")
         if not df_products.empty:
             st.dataframe(df_products, use_container_width=True)
-            
+
         st.markdown("### Edit/Delete Product")
         col1, col2 = st.columns(2)
         with col1:
@@ -1014,7 +1019,7 @@ elif page == "📦 Masters":
                         edit_dim_w = st.number_input("Dimension W", min_value=0.0, value=float(product_data['dimension_w'].iloc[0]) if pd.notna(product_data['dimension_w'].iloc[0]) else 0.0, step=0.01, key="edit_product_dim_w_field")
                         edit_dim_l = st.number_input("Dimension L", min_value=0.0, value=float(product_data['dimension_l'].iloc[0]) if pd.notna(product_data['dimension_l'].iloc[0]) else 0.0, step=0.01, key="edit_product_dim_l_field")
                         edit_description = st.text_area("Description", value=product_data['description'].iloc[0] if pd.notna(product_data['description'].iloc[0]) else "", key="edit_product_desc_field")
-                    
+
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.form_submit_button("💾 Save Changes", type="primary"):
@@ -1034,7 +1039,7 @@ elif page == "📦 Masters":
 
     with tab3:
         st.markdown("### 🔧 BOM (Bill of Materials) Management")
-        
+
         # =================== HARDCODED BOM DATA INITIALIZATION ===================
         BOM_DATA = {
             "5A SSC with JB": {"5A STC": 1, "5A DTC": 1, "5A W/S": 2, "5A C/C": 1, "5A Action": 1, "5A Earting Pin": 1, "5A Live Pin": 1, "5A Threading Patti": 2, "5/15A Bulb": 1},
@@ -1056,28 +1061,28 @@ elif page == "📦 Masters":
                 st.session_state.bom_initialized = True
 
         st.markdown("---")
-        
+
         # --- EDIT EXISTING BOM SECTION ---
         st.markdown("#### ✏️ Edit Existing BOM Entry")
         df_bom_list = fetch_data("SELECT fg_product, rm_product, required_qty FROM bom_master ORDER BY fg_product, rm_product")
-        
+
         if not df_bom_list.empty:
             # Create a readable label for selection
             bom_options = [f"{row['fg_product']} -> {row['rm_product']} (Qty: {row['required_qty']})" for _, row in df_bom_list.iterrows()]
             selected_bom_label = st.selectbox("Select BOM Entry to Edit", bom_options)
-            
+
             if selected_bom_label:
                 # Parse the selection to get FG and RM names
                 parts = selected_bom_label.split(" -> ")
                 sel_fg = parts[0]
                 sel_rm_qty_part = parts[1].split(" (Qty: ")
                 sel_rm = sel_rm_qty_part[0]
-                
+
                                 # Initialize session state for BOM quantity editing
                 if 'bom_edit_qty' not in st.session_state:
                     st.session_state.bom_edit_qty = float(sel_rm_qty_part[1].replace(")", ""))
                     st.session_state.bom_edit_prev_label = selected_bom_label
-                
+
                 # Reset quantity if the user selects a different BOM entry
                 if st.session_state.get('bom_edit_prev_label') != selected_bom_label:
                     st.session_state.bom_edit_qty = float(sel_rm_qty_part[1].replace(")", ""))
@@ -1087,10 +1092,10 @@ elif page == "📦 Masters":
                 with col_e1:
                     st.text_input("FG Product", value=sel_fg, disabled=True)
                     st.text_input("RM Material", value=sel_rm, disabled=True)
-                
+
                 with col_e2:
                     st.markdown("**Adjust Quantity (Click ➕ or ➖)**")
-                    
+
                     # Create columns for Minus, Input, Plus
                     col_m1, col_m2, col_m3 = st.columns([1, 2, 1])
                     with col_m1:
@@ -1113,7 +1118,7 @@ elif page == "📦 Masters":
                         if st.button("➕", key="bom_plus_btn", help="Increase by 1"):
                             st.session_state.bom_edit_qty = st.session_state.bom_edit_qty + 1.0
                             st.rerun()
-                    
+
                     # Update Button
                     if st.button("💾 Save Updated Qty", type="primary", key="save_bom_qty_btn"):
                         execute_query("UPDATE bom_master SET required_qty = ? WHERE fg_product = ? AND rm_product = ?", 
@@ -1138,12 +1143,12 @@ elif page == "📦 Masters":
                 df_rm = fetch_data("SELECT product_name FROM product_master ORDER BY product_name")
             rm_list = df_rm['product_name'].tolist() if not df_rm.empty else []
             bom_rm_product = st.selectbox("RM Material", rm_list if rm_list else ["No RM products"], key="bom_rm_select_new")
-        
+
         st.markdown("**Adjust Quantity (Click ➕ or ➖)**")
         # Initialize session state for new BOM quantity
         if 'new_bom_qty' not in st.session_state:
             st.session_state.new_bom_qty = 1.0
-        
+
         col_m1, col_m2, col_m3 = st.columns([1, 2, 1])
         with col_m1:
             if st.button("➖", key="new_bom_minus_btn", help="Decrease by 1"):
@@ -1164,7 +1169,7 @@ elif page == "📦 Masters":
             if st.button("➕", key="new_bom_plus_btn", help="Increase by 1"):
                 st.session_state.new_bom_qty = st.session_state.new_bom_qty + 1.0
                 st.rerun()
-        
+
         if st.button("💾 Add BOM", type="primary", key="add_bom_btn_new"):
             if bom_fg_product != "No FG products" and bom_rm_product != "No RM products":
                 try:
@@ -1351,12 +1356,8 @@ elif page == "🛒 Purchase Entry":
             # Re-fetch lists for editing context
             df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Purchase Party", "Moulder", "Contractor", "Powder"] else "All")
             party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
-            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
-        # Safe access to product_name column
-            if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
-                product_list_edit = df_products_edit['product_name'].tolist()
-            else:
-                product_list_edit = []
+            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else "All")
+            product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
             with st.form("edit_purchase_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -1479,11 +1480,14 @@ elif page == "🏭 Production Entry":
         st.session_state.prod_prod_filter = "FG Product"
 
     unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
+    
 
     st.markdown("### 🔍 Filters")
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         party_filter = st.selectbox(
+            "Select Party Type (Category)", 
+            ["Moulder", "Contractor", "Purchase Party", "All"], 
             "Select Party Type (Category)",
             ["Moulder", "Contractor", "Purchase Party", "All"],
             key="prod_party_filter_select",
@@ -1495,6 +1499,8 @@ elif page == "🏭 Production Entry":
             
     with col_f2:
         prod_cat_filter = st.selectbox(
+            "Filter Product By Category", 
+            ["FG Product", "Moulding Product", "RM Product", "Powder", "All"], 
             "Filter Product By Category",
             ["FG Product", "Moulding Product", "RM Product", "Powder", "All"],
             key="prod_prod_filter_select",
@@ -1503,14 +1509,16 @@ elif page == "🏭 Production Entry":
         if prod_cat_filter != st.session_state.prod_prod_filter:
             st.session_state.prod_prod_filter = prod_cat_filter
             st.rerun()
-            
+
     st.markdown("---")
+    
 
     df_parties, _ = get_dynamic_lists(st.session_state.prod_party_filter)
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
-    
+
     _, df_products = get_dynamic_lists(st.session_state.prod_prod_filter)
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
+    product_details_map = dict(zip(df_products['product_name'], zip(df_products['rate'], df_products['unit'], df_products['category']))) if not df_products.empty else {}
     
     # Map product details for auto-filling rate/unit
     product_details_map = {}
@@ -1534,30 +1542,34 @@ elif page == "🏭 Production Entry":
                 r, u, c = product_details_map[fg_product]
                 unit_val = u
                 actual_prod_cat = c
-                
+
             produced_qty = st.number_input("Produced Qty *", min_value=0.0, step=1.0)
             unit = st.selectbox("Unit", unit_options, index=unit_options.index(unit_val) if unit_val in unit_options else 4)
             
         with col3:
             description = st.text_area("Description")
-            
+
         submitted = st.form_submit_button("Save Production", type="primary")
         
         if submitted:
             if all([party_name and party_name != "No parties added yet", fg_product and fg_product != "No products found", produced_qty > 0]):
                 try:
+                    execute_query('''INSERT INTO production_register 
+                        (challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, actual_prod_cat, produced_qty, unit, description))
                     # 1. Insert into Production Register
                     execute_query('''INSERT INTO production_register
                     (challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                     (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, actual_prod_cat, produced_qty, unit, description))
-                    
+
                     # 2. Ensure Inventory Record Exists
                     execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (fg_product,))
                     
                     # 3. Update Inventory (Real-time)
                     update_fg_inventory(fg_product, produced_qty, 'PRODUCE')
-                    
+
                     st.success("✅ Production entry saved successfully!")
                     st.rerun()
                 except Exception as e:
@@ -1566,6 +1578,7 @@ elif page == "🏭 Production Entry":
                 st.warning("Please fill all required fields")
 
     st.markdown("---")
+    st.markdown("### 📝 Manage Production Entries")
     st.markdown("### 📋 Manage Production Entries")
     
     df_all_production = fetch_data("SELECT id, challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description FROM production_register ORDER BY date DESC")
@@ -1574,7 +1587,7 @@ elif page == "🏭 Production Entry":
         production_options = [f"ID:{row['id']} | {row['fg_product']} | {row['produced_qty']} {row['unit']} | {row['party_name']} | {row['date']}" for _, row in df_all_production.iterrows()]
         selected_production = st.selectbox("Select Production Entry to Edit/Delete", production_options, key="select_production_manage")
         selected_id = int(selected_production.split('|')[0].replace('ID:', '').strip()) if selected_production else None
-        
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✏️ Edit Selected Production", type="primary", key="edit_production_btn"):
@@ -1591,15 +1604,16 @@ elif page == "🏭 Production Entry":
                         # Use .iloc[0] to access DataFrame rows safely
                         product = record['fg_product'].iloc[0]
                         qty = record['produced_qty'].iloc[0]
-                        
+
                         # Reverse Inventory
                         execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) - ? WHERE product_name = ?", (qty, product))
                         execute_query("""
+                            UPDATE fg_inventory 
                             UPDATE fg_inventory
                             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                             WHERE product_name = ?
                         """, (product,))
-                        
+
                         execute_query("DELETE FROM production_register WHERE id = ?", (selected_id,))
                         st.success("✅ Production entry deleted and inventory updated!")
                         st.session_state['confirm_delete_production'] = False
@@ -1619,23 +1633,31 @@ elif page == "🏭 Production Entry":
             
             df_parties_edit_all = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Moulder', 'Contractor', 'Purchase Party') ORDER BY party_name")
             party_list_edit = df_parties_edit_all['party_name'].tolist() if not df_parties_edit_all.empty else []
-            
+
             df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
-        # Safe access to product_name column
-            if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
-                product_list_edit = df_products_edit['product_name'].tolist()
-            else:
-                product_list_edit = []
+            product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
+
             with st.form("edit_production_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     edit_challan = st.text_input("Challan No", value=row['challan_no'] if pd.notna(row['challan_no']) else "", key="edit_prod_challan")
                     edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_prod_date")
+                    edit_party = st.selectbox("Party/Moulder/Contractor", 
+                        party_list_edit if party_list_edit else [row['party_name']], 
+                        index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                        key="edit_prod_party")
                     edit_party = st.selectbox("Party/Moulder/Contractor",
                                               party_list_edit if party_list_edit else [row['party_name']],
                                               index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
                                               key="edit_prod_party")
                 with col2:
+                    edit_product = st.selectbox("Product", 
+                        product_list_edit if product_list_edit else [row['fg_product']], 
+                        index=product_list_edit.index(row['fg_product']) if row['fg_product'] in product_list_edit else 0,
+                        key="edit_prod_product")
+                    edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"], 
+                        index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
+                        key="edit_prod_prod_cat")
                     edit_product = st.selectbox("Product",
                                                 product_list_edit if product_list_edit else [row['fg_product']],
                                                 index=product_list_edit.index(row['fg_product']) if row['fg_product'] in product_list_edit else 0,
@@ -1644,11 +1666,15 @@ elif page == "🏭 Production Entry":
                                                          index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
                                                          key="edit_prod_prod_cat")
                     edit_qty = st.number_input("Produced Qty *", min_value=0.0, value=float(row['produced_qty']), step=1.0, key="edit_prod_qty")
+                    edit_unit = st.selectbox("Unit", unit_options, 
+                        index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                        key="edit_prod_unit")
                     edit_unit = st.selectbox("Unit", unit_options,
                                              index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
                                              key="edit_prod_unit")
                 with col3:
                     edit_description = st.text_area("Description", value=row['description'] if pd.notna(row['description']) else "", key="edit_prod_desc")
+                
                     
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1656,7 +1682,12 @@ elif page == "🏭 Production Entry":
                         old_qty = row['produced_qty']
                         old_product = row['fg_product']
                         qty_diff = edit_qty - old_qty
-                        
+
+                        execute_query('''UPDATE production_register SET 
+                            challan_no=?, date=?, party_name=?, fg_product=?, product_category=?, produced_qty=?, unit=?, description=?
+                            WHERE id=?''',
+                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_product_category, edit_qty, edit_unit, edit_description, st.session_state.edit_id))
+                            
                         # Update Transaction Record
                         execute_query('''UPDATE production_register SET
                         challan_no=?, date=?, party_name=?, fg_product=?, product_category=?, produced_qty=?, unit=?, description=?
@@ -1668,6 +1699,7 @@ elif page == "🏭 Production Entry":
                             if qty_diff != 0:
                                 execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                 execute_query("""
+                                    UPDATE fg_inventory 
                                     UPDATE fg_inventory
                                     SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                     WHERE product_name = ?
@@ -1676,19 +1708,21 @@ elif page == "🏭 Production Entry":
                             # Product Changed: Reverse Old, Add New
                             execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                             execute_query("""
+                                UPDATE fg_inventory 
                                 UPDATE fg_inventory
                                 SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                 WHERE product_name = ?
                             """, (old_product,))
-                            
+
                             execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                             execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
                             execute_query("""
+                                UPDATE fg_inventory 
                                 UPDATE fg_inventory
                                 SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                 WHERE product_name = ?
                             """, (edit_product,))
-                            
+
                         st.success("✅ Production entry updated successfully!")
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
@@ -1701,6 +1735,9 @@ elif page == "🏭 Production Entry":
                         st.rerun()
 
     st.markdown("### All Production Entries")
+    st.dataframe(df_all_production, use_container_width=True)
+
+# ======================= SALES ENTRY =======================
     if not df_all_production.empty:
         st.dataframe(df_all_production, use_container_width=True)
 # ======================= SALES ENTRY =======================
@@ -1789,33 +1826,33 @@ elif page == "💰 Sales Entry":
                             if not df_stock.empty:
                                 val = df_stock['closing_stock'].iloc[0]
                                 available = float(val) if pd.notna(val) else 0.0
-                        
+
                         if available < qty:
                             st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
                         else:
                             sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
                             due_date = sale_date_dt + timedelta(days=payment_days)
                             sale_amount = qty * rate
-                            
+
                             # 1. Insert Sales Transaction
                             execute_query('''INSERT INTO sales_transactions
                             (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                             (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
-                            
+
                             # Get the ID of the newly inserted sale for reference
                             new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
-        
+
                             # 2. Update Inventory
                             if actual_prod_cat == 'RM Product':
                                 update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
                             else:
                                 # Use the updated update_fg_inventory function
                                 update_fg_inventory(product, qty, 'SALE')
-                                
+
                             # 3. Create Receivable Entry
                             create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
-                            
+
                             st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
                             st.balloons()
                             # Force immediate rerun to reflect changes in dashboard/ledger
@@ -1880,12 +1917,8 @@ elif page == "💰 Sales Entry":
             row = sales_data.iloc[0]
             df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Sales Party", "Purchase Party", "Moulder", "Contractor"] else "All")
             party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
-            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else "All")
-        # Safe access to product_name column
-            if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
-                product_list_edit = df_products_edit['product_name'].tolist()
-            else:
-                product_list_edit = []
+            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
+            product_list_edit = df_products_edit['product_name'].tolist() if not df_products_edit.empty else []
             with st.form("edit_sale_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -1926,23 +1959,24 @@ elif page == "💰 Sales Entry":
                         old_challan = row['challan_no']
                         old_party = row['party_name']
                         old_amount = row['amount']
-                        
+
                         qty_diff = edit_qty - old_qty
                         new_amount = edit_qty * edit_rate
-                        
+
                         # 1. Update Sales Transaction Record
                         execute_query('''UPDATE sales_transactions SET
                         challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
                         WHERE id=?''',
                         (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
                         (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d'), st.session_state.edit_id))
-                        
+
                         # 2. Adjust Inventory (Reverse Old, Apply New)
                         # Note: We reverse the OLD transaction first, then apply the NEW one.
-                        
+
                         # Reverse Old Product Inventory
                         if old_prod_cat == 'RM Product':
                             # If it was an RM sale, we add back the stock (reverse the sale)
+                            update_rm_inventory(old_product, old_qty, 'SALE_REVERSAL', old_date, old_challan, rate=old_rate) # Note: You might need to handle reversal logic in update_rm_inventory or just do direct SQL
                             # Simpler approach: Direct SQL adjustment for reversal to avoid complex logic in helper
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                             execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (old_qty, old_product))
@@ -1954,7 +1988,7 @@ elif page == "💰 Sales Entry":
                                 SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                 WHERE product_name = ?
                             """, (old_product,))
-                    
+
                         # Apply New Product Inventory
                         if edit_product_category == 'RM Product':
                             execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
@@ -1962,7 +1996,7 @@ elif page == "💰 Sales Entry":
                         else:
                             execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                             update_fg_inventory(edit_product, edit_qty, 'SALE')
-                    
+
                         # 3. Update Ledger (Receivables)
                         # Delete old receivable entry associated with the old challan/party
                         execute_query("""
@@ -1971,10 +2005,10 @@ elif page == "💰 Sales Entry":
                             AND challan_no = ?
                             AND party_name = ?
                         """, (old_challan, old_party))
-                        
+
                         # Create new receivable entry with updated details
                         create_receivable_entry(edit_party, edit_challan, edit_date.strftime('%Y-%m-%d'), new_amount, edit_payment_days)
-                        
+
                         st.success("✅ Sales entry, Inventory, and Ledger updated successfully!")
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
@@ -1990,7 +2024,7 @@ elif page == "💰 Sales Entry":
 # ======================= PAYABLE/RECEIVABLE LEDGER =======================
 elif page == "📒 Payable/Receivable Ledger":
     st.subheader("📒 Payable/Receivable Ledger")
-    
+
     # Helper function reused from Inventory section logic
     def get_parties_by_category_ledger(category):
         if category == "All":
@@ -2001,7 +2035,7 @@ elif page == "📒 Payable/Receivable Ledger":
 
     df_all_parties = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
     party_list_all = df_all_parties['party_name'].tolist() if not df_all_parties.empty else []
-    
+
     overdue_payments = check_overdue_payments()
     if not overdue_payments.empty:
         st.error(f"⚠️ **ALERT: {len(overdue_payments)} Overdue Receivable(s)!**")
@@ -2023,7 +2057,7 @@ elif page == "📒 Payable/Receivable Ledger":
     # =================== TAB 1: RECEIVABLES ===================
     with tab1:
         st.markdown("### 💵 Receivables from Customers")
-        
+
         # --- NEW FILTERS ---
         st.markdown("#### 🔍 Filter Receivables")
         col_f1, col_f2 = st.columns(2)
@@ -2036,7 +2070,7 @@ elif page == "📒 Payable/Receivable Ledger":
             recv_party_filter = st.selectbox("Select Party Name", recv_party_options, key="recv_party_filter_select")
 
         filter_status = st.selectbox("Filter by Status", ["All", "PENDING", "PARTIAL", "PAID"], key="recv_filter_status")
-        
+
         query = """
         SELECT id, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks,
         julianday(date('now')) - julianday(due_date) as days_overdue
@@ -2051,31 +2085,31 @@ elif page == "📒 Payable/Receivable Ledger":
             query += " AND party_name = ?"
             params.append(recv_party_filter)
         query += " ORDER BY due_date"
-        
+
         df_recv = fetch_data(query, tuple(params))
-        
+
         if not df_recv.empty:
             col1, col2, col3, col4 = st.columns(4)
             with col1: st.metric("📊 Total Invoices", len(df_recv))
             with col2: st.metric("💰 Total Billed", f"₹{df_recv['amount'].sum():,.2f}")
             with col3: st.metric("✅ Total Received", f"₹{df_recv['paid_amount'].sum():,.2f}")
             with col4: st.metric("📉 Total Outstanding", f"₹{df_recv['balance_amount'].sum():,.2f}")
-            
+
             display_df = df_recv[['party_name', 'challan_no', 'invoice_date', 'due_date', 'amount', 'paid_amount', 'balance_amount', 'payment_status']].copy()
             display_df.columns = ['Party', 'Challan No', 'Invoice Date', 'Due Date', 'Amount', 'Paid', 'Balance', 'Status']
             st.dataframe(display_df, use_container_width=True)
-            
+
             st.markdown("---")
             st.markdown("### 💵 Record Payment Received from Customer")
             st.info("👇 Select an invoice below and enter the payment amount to record it")
-            
+
             unpaid_recv = df_recv[(df_recv['payment_status'] != 'PAID') & (df_recv['balance_amount'] > 0)].copy()
             if not unpaid_recv.empty:
                 recv_options = {}
                 for _, row in unpaid_recv.iterrows():
                     label = f"{row['challan_no']} | {row['party_name']} | Balance: ₹{float(row['balance_amount']):,.2f}"
                     recv_options[label] = row['id']
-                
+
                 with st.form("payment_received_form"):
                     col1, col2 = st.columns(2)
                     with col1:
@@ -2092,7 +2126,7 @@ elif page == "📒 Payable/Receivable Ledger":
                             selected_balance = 0.01
                         if selected_balance < 0.01: selected_balance = 0.01
                         payment_amount = st.number_input("Payment Amount (₹)", min_value=0.01, max_value=selected_balance, value=selected_balance, step=0.01, key="payment_amount_recv_input")
-                    
+
                     submitted = st.form_submit_button("💵 Record Payment Received", type="primary")
                     if submitted:
                         if selected_id and payment_amount > 0:
@@ -2131,7 +2165,7 @@ elif page == "📒 Payable/Receivable Ledger":
     # =================== TAB 2: PAYABLES ===================
     with tab2:
         st.markdown("### 💸 Payables to Suppliers")
-        
+
         # --- NEW FILTERS ---
         st.markdown("#### 🔍 Filter Payables")
         col_f1, col_f2 = st.columns(2)
@@ -2144,7 +2178,7 @@ elif page == "📒 Payable/Receivable Ledger":
             pay_party_filter = st.selectbox("Select Party Name", pay_party_options, key="pay_party_filter_select")
 
         filter_status_pay = st.selectbox("Filter by Status", ["All", "PENDING", "PARTIAL", "PAID"], key="pay_filter_status")
-        
+
         query_pay = """
         SELECT id, party_name, challan_no, invoice_date, due_date, amount, paid_amount, balance_amount, payment_status, remarks,
         julianday(date('now')) - julianday(due_date) as days_overdue
@@ -2159,31 +2193,31 @@ elif page == "📒 Payable/Receivable Ledger":
             query_pay += " AND party_name = ?"
             params_pay.append(pay_party_filter)
         query_pay += " ORDER BY due_date"
-        
+
         df_pay = fetch_data(query_pay, tuple(params_pay))
-        
+
         if not df_pay.empty:
             col1, col2, col3, col4 = st.columns(4)
             with col1: st.metric("📊 Total Invoices", len(df_pay))
             with col2: st.metric("💰 Total Billed", f"₹{df_pay['amount'].sum():,.2f}")
             with col3: st.metric("✅ Total Paid", f"₹{df_pay['paid_amount'].sum():,.2f}")
             with col4: st.metric("📉 Total Outstanding", f"₹{df_pay['balance_amount'].sum():,.2f}")
-            
+
             display_df_pay = df_pay[['party_name', 'challan_no', 'invoice_date', 'due_date', 'amount', 'paid_amount', 'balance_amount', 'payment_status']].copy()
             display_df_pay.columns = ['Party/Supplier', 'Challan No', 'Invoice Date', 'Due Date', 'Amount', 'Paid', 'Balance', 'Status']
             st.dataframe(display_df_pay, use_container_width=True)
-            
+
             st.markdown("---")
             st.markdown("### 💸 Record Payment Made to Supplier")
             st.info("👇 Select an invoice below and enter the payment amount to record it")
-            
+
             unpaid_pay = df_pay[(df_pay['payment_status'] != 'PAID') & (df_pay['balance_amount'] > 0)].copy()
             if not unpaid_pay.empty:
                 pay_options = {}
                 for _, row in unpaid_pay.iterrows():
                     label = f"{row['challan_no']} | {row['party_name']} | Balance: ₹{float(row['balance_amount']):,.2f}"
                     pay_options[label] = row['id']
-                
+
                 with st.form("payment_made_form"):
                     col1, col2 = st.columns(2)
                     with col1:
@@ -2200,7 +2234,7 @@ elif page == "📒 Payable/Receivable Ledger":
                             selected_balance_pay = 0.01
                         if selected_balance_pay < 0.01: selected_balance_pay = 0.01
                         payment_amount_pay = st.number_input("Payment Amount (₹)", min_value=0.01, max_value=selected_balance_pay, value=selected_balance_pay, step=0.01, key="payment_amount_pay_input")
-                    
+
                     submitted = st.form_submit_button("💸 Record Payment to Supplier", type="primary")
                     if submitted:
                         if selected_id_pay and payment_amount_pay > 0:
@@ -2240,7 +2274,7 @@ elif page == "📒 Payable/Receivable Ledger":
     with tab3:
         st.markdown("### ➕ Add Manual Receipt / Payment")
         entry_type = st.radio("Select Entry Type", ["Manual Payment to Supplier (Payable)", "Manual Receipt from Customer (Receivable)"], horizontal=True)
-        
+
         if entry_type == "Manual Payment to Supplier (Payable)":
             st.info("Use this to record a payment made to a supplier against an existing invoice or as an advance payment.")
             with st.form("manual_payment_form"):
@@ -2273,7 +2307,7 @@ elif page == "📒 Payable/Receivable Ledger":
                     else:
                         mp_amount = st.number_input("Payment Amount (₹)", min_value=0.01, step=0.01, key="mp_amount_pay")
                     mp_remarks = st.text_area("Remarks", key="mp_remarks_pay")
-                
+
                 if st.form_submit_button("💸 Record Payment to Supplier", type="primary"):
                     if mp_party and mp_party != "No parties added" and mp_amount > 0:
                         ref_no = mp_challan.strip() if mp_challan.strip() else f"MANUAL-PAY-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -2317,7 +2351,7 @@ elif page == "📒 Payable/Receivable Ledger":
                 with col2:
                     mr_amount = st.number_input("Amount Received (₹)", min_value=0.01, step=0.01, key="mr_amount_recv")
                     mr_remarks = st.text_area("Remarks", key="mr_remarks_recv")
-                
+
                 if st.form_submit_button("💵 Add Receipt Entry", type="primary"):
                     if mr_party and mr_party != "No parties added" and mr_amount > 0:
                         ref_no = mr_challan.strip() if mr_challan.strip() else f"MANUAL-RCV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -2333,12 +2367,12 @@ elif page == "📒 Payable/Receivable Ledger":
 elif page == "⚠️ Rejections":
     st.subheader("⚠️ Rejection Management")
     tab1, tab2 = st.tabs(["Market Rejection", "Party Rejection"])
-    
+
     df_parties = fetch_data("SELECT party_name FROM party_master")
     df_products = fetch_data("SELECT product_name FROM product_master")
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
-    
+
     with tab1:
         st.markdown("### Add Market Rejection")
         with st.form("mr_form"):
@@ -2351,7 +2385,7 @@ elif page == "⚠️ Rejections":
                 mr_qty = st.number_input("Qty Rejected *", min_value=0.0, step=1.0, key="mr_qty")
                 mr_reason = st.text_area("Reason", key="mr_reason")
                 mr_challan = st.text_input("Challan Ref", key="mr_challan")
-                
+
             submitted = st.form_submit_button("Save Market Rejection", type="primary")
             if submitted:
                 if all([mr_product, mr_qty > 0]):
@@ -2360,22 +2394,22 @@ elif page == "⚠️ Rejections":
                             (date, party_name, product_name, qty_rejected, reason, challan_ref)
                             VALUES (?, ?, ?, ?, ?, ?)''',
                             (mr_date.strftime('%Y-%m-%d'), mr_party, mr_product, mr_qty, mr_reason, mr_challan))
-                        
+
                         execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (mr_product,))
                         update_fg_inventory(mr_product, mr_qty, 'REJECT')
-                        
+
                         st.success("✅ Market rejection saved successfully!")
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
                 else:
                     st.warning("Please fill all required fields")
-                    
+
         st.markdown("### Market Rejection Records")
         df_mr = fetch_data("SELECT date, party_name, product_name, qty_rejected, reason, challan_ref FROM market_rejection_register ORDER BY date DESC LIMIT 50")
         if not df_mr.empty:
             st.dataframe(df_mr, use_container_width=True)
-            
+
     with tab2:
         st.markdown("### Add Party Rejection")
         with st.form("pr_form"):
@@ -2388,7 +2422,7 @@ elif page == "⚠️ Rejections":
                 pr_qty = st.number_input("Qty Rejected *", min_value=0.0, step=1.0, key="pr_qty")
                 pr_reason = st.text_area("Reason", key="pr_reason")
                 pr_challan = st.text_input("Challan Ref", key="pr_challan")
-                
+
             submitted = st.form_submit_button("Save Party Rejection", type="primary")
             if submitted:
                 if all([pr_party, pr_product, pr_qty > 0]):
@@ -2397,14 +2431,14 @@ elif page == "⚠️ Rejections":
                             (date, party_name, product_name, qty_rejected, reason, challan_ref)
                             VALUES (?, ?, ?, ?, ?, ?)''',
                             (pr_date.strftime('%Y-%m-%d'), pr_party, pr_product, pr_qty, pr_reason, pr_challan))
-                        
+
                         st.success("✅ Party rejection saved successfully!")
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
                 else:
                     st.warning("Please fill all required fields")
-                    
+
         st.markdown("### Party Rejection Records")
         df_pr = fetch_data("SELECT date, party_name, product_name, qty_rejected, reason, challan_ref FROM party_rejection_register ORDER BY date DESC LIMIT 50")
         if not df_pr.empty:
@@ -2414,7 +2448,7 @@ elif page == "⚠️ Rejections":
 elif page == "📈 Inventory":
     st.subheader("📈 Inventory Management")
     tab1, tab2, tab3, tab4 = st.tabs(["RM Inventory Summary", "RM Stock Movement", "FG Inventory", "🧮 FG to RM Calculator"])
-    
+
     # Helper to get parties based on category for filters
     def get_parties_by_category(category):
         if category == "All":
@@ -2436,7 +2470,7 @@ elif page == "📈 Inventory":
             df_rm_inv['total_consumed_qty'] = pd.to_numeric(df_rm_inv['total_consumed_qty'], errors='coerce').fillna(0)
             df_rm_inv['rate'] = pd.to_numeric(df_rm_inv['rate'], errors='coerce').fillna(0)
             df_rm_inv['corrected_closing_stock'] = df_rm_inv['opening_stock'] + df_rm_inv['total_purchased_qty'] - df_rm_inv['total_consumed_qty']
-            
+
             # Auto-correction of closing stock
             for index, row in df_rm_inv.iterrows():
                 if abs(row['closing_stock'] - row['corrected_closing_stock']) > 0.01:
@@ -2447,11 +2481,11 @@ elif page == "📈 Inventory":
             with col1: st.metric("Total RM Products", len(df_rm_inv))
             with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['corrected_closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
             with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
-            
+
             display_df = df_rm_inv[['product_name', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'corrected_closing_stock', 'rate']].copy()
             display_df.rename(columns={'corrected_closing_stock': 'closing_stock'}, inplace=True)
             st.dataframe(display_df, use_container_width=True)
-            
+
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
             with col1: rm_product = st.selectbox("Select RM Product", df_rm_inv['product_name'].tolist(), key="rm_product_select")
@@ -2471,7 +2505,7 @@ elif page == "📈 Inventory":
     with tab2:
         st.markdown("### RM Stock Movement (Detailed)")
         st.info("This shows only manual Purchase and Sales entries added by you.")
-        
+
         # --- NEW FILTERS FOR RM MOVEMENT ---
         st.markdown("#### 🔍 Filter Movements")
         col_f1, col_f2 = st.columns(2)
@@ -2482,12 +2516,12 @@ elif page == "📈 Inventory":
         with col_f2:
             rm_move_parties = get_parties_by_category(rm_move_cat)
             rm_move_party = st.selectbox("Select Party Name", rm_move_parties, key="rm_move_party_filter")
-        
+
         # Fetch products that have movement records
         df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
         if not df_products.empty:
             selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
-            
+
             # UPDATED QUERY: Join with purchase/sales tables to get Party Name if available via reference_id or challan
             query_movement = """
             SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, rsm.reference_id
@@ -2495,7 +2529,7 @@ elif page == "📈 Inventory":
             WHERE rsm.product_name = ? AND rsm.transaction_type IN ('PURCHASE', 'SALE')
             """
             params_movement = [selected_product]
-            
+
             # If specific party selected, we need to join to find transactions associated with that party
             if rm_move_party != "All":
                 # We join with purchase_transactions for PURCHASE type and sales_transactions for SALE type
@@ -2513,11 +2547,11 @@ elif page == "📈 Inventory":
                 )
                 """
                 params_movement = [selected_product, rm_move_party, rm_move_party]
-            
+
             query_movement += " ORDER BY rsm.transaction_date, rsm.id"
-            
+
             df_movement = fetch_data(query_movement, tuple(params_movement))
-            
+
             if not df_movement.empty:
                 # Enrich dataframe with Party Name for display (Real-time fetch)
                 party_names = []
@@ -2531,7 +2565,7 @@ elif page == "📈 Inventory":
                     elif row['transaction_type'] == 'SALE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM sales_transactions WHERE id = ?", (row['reference_id'],))
                         if not res.empty: p_name = res['party_name'].iloc[0]
-                    
+
                     # Fallback: If reference_id is missing or null, try matching Challan No (less reliable but helpful)
                     if p_name == "N/A" and pd.notna(row['challan_no']):
                          # Try finding in Purchase
@@ -2543,15 +2577,15 @@ elif page == "📈 Inventory":
                              if not res_s.empty: p_name = res_s['party_name'].iloc[0]
 
                     party_names.append(p_name)
-                
+
                 df_movement['party_name'] = party_names
-                
+
                 opening_result = fetch_data("SELECT COALESCE(opening_stock, 0) as opening_stock FROM rm_inventory WHERE product_name = ?", (selected_product,))
                 opening_stock = opening_result['opening_stock'].iloc[0] if not opening_result.empty else 0
                 running_balance = opening_stock
                 opening_balances = []
                 closing_balances = []
-                
+
                 for idx, row in df_movement.iterrows():
                     opening_balances.append(running_balance)
                     if row['transaction_type'] == 'PURCHASE':
@@ -2559,14 +2593,14 @@ elif page == "📈 Inventory":
                     elif row['transaction_type'] == 'SALE':
                         running_balance -= row['qty']
                     closing_balances.append(running_balance)
-                
+
                 df_movement['opening_balance'] = opening_balances
                 df_movement['closing_balance'] = closing_balances
-                
+
                 # Display the dataframe with Party Name
                 df_display = df_movement[['transaction_date', 'challan_no', 'party_name', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
                 st.dataframe(df_display, use_container_width=True)
-                
+
                 col1, col2, col3 = st.columns(3)
                 total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
                 total_sales = df_movement[df_movement['transaction_type']=='SALE']['qty'].sum()
@@ -2588,7 +2622,7 @@ elif page == "📈 Inventory":
         WHERE m.category IN ('FG Product', 'Moulding Product', 'Powder') OR m.category IS NULL
         ORDER BY i.product_name
         """)
-        
+
         if not df_fg_inv.empty:
             # Enrich with Last Party Info (Real-time Name Display)
             last_parties = []
@@ -2605,16 +2639,16 @@ elif page == "📈 Inventory":
                         last_parties.append(f"Moulded by: {prod_res['party_name'].iloc[0]}")
                     else:
                         last_parties.append("N/A")
-            
+
             df_fg_inv['Last Interaction'] = last_parties
-            
+
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total FG Products", len(df_fg_inv))
             with col2: st.metric("Total Stock Value", f"₹{(df_fg_inv['closing_stock'] * df_fg_inv['rate'].fillna(0)).sum():,.2f}")
             with col3: st.metric("Total Produced", f"{df_fg_inv['produced_qty'].sum():,.0f}")
-            
+
             st.dataframe(df_fg_inv, use_container_width=True)
-            
+
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
             with col1: fg_product = st.selectbox("Select FG Product", df_fg_inv['product_name'].tolist(), key="fg_product_select")
@@ -2638,7 +2672,7 @@ elif page == "📈 Inventory":
         st.markdown("#### 📊 Sales-Based RM Requirements (Auto-Calculated from Sales)")
         st.info("💡 This section automatically calculates RM requirements based on actual FG product sales. "
                 "When you sell FG products, the required RM materials are calculated using the BOM (same logic as your Excel sheet).")
-        
+
         # Fetch all FG sales with FULL DETAILS including Party Name
         df_fg_sales = fetch_data("""
         SELECT st.id, st.challan_no, st.date, st.party_name, st.product_name,
@@ -2649,30 +2683,30 @@ elif page == "📈 Inventory":
         WHERE pm.category IN ('FG Product', 'Moulding Product')
         ORDER BY st.date DESC, st.id DESC
         """)
-        
+
         if df_fg_sales.empty:
             st.warning("⚠️ No FG product sales found yet. Sales-based RM calculation will appear here once you make sales.")
         else:
             # Calculate RM requirements for all sales
             sales_rm_requirements = {}
             total_sales_value = 0.0
-            
+
             for _, sale_row in df_fg_sales.iterrows():
                 fg_product = sale_row['product_name']
                 fg_qty_sold = float(sale_row['qty'])
-                
+
                 bom_items = fetch_data("""
                 SELECT rm_product, required_qty
                 FROM bom_master
                 WHERE fg_product = ?
                 """, (fg_product,))
-                
+
                 if not bom_items.empty:
                     for _, bom_row in bom_items.iterrows():
                         rm_name = bom_row['rm_product']
                         rm_per_unit = float(bom_row['required_qty'])
                         rm_total_needed = rm_per_unit * fg_qty_sold
-                        
+
                         if rm_name not in sales_rm_requirements:
                             sales_rm_requirements[rm_name] = {
                                 'total_required': 0.0,
@@ -2692,7 +2726,7 @@ elif page == "📈 Inventory":
                             'rm_per_unit': rm_per_unit,
                             'rm_needed': rm_total_needed
                         })
-            
+
             if sales_rm_requirements:
                 sales_calc_rows = []
                 has_shortage = False
@@ -2703,54 +2737,54 @@ elif page == "📈 Inventory":
                     FROM rm_inventory
                     WHERE product_name = ?
                     """, (rm_name,))
-                    
+
                     if not stock_df.empty:
                         available = float(stock_df['closing_stock'].iloc[0]) if pd.notna(stock_df['closing_stock'].iloc[0]) else 0.0
                         rate = float(stock_df['rate'].iloc[0]) if pd.notna(stock_df['rate'].iloc[0]) else 0.0
                     else:
                         available = 0.0
                         rate = 0.0
-                        
+
                     shortage = total_required - available
                     status = "✅ OK" if shortage <= 0 else "❌ SHORTAGE"
                     if shortage > 0: has_shortage = True
-                    
+
                     unique_sales = len(set([b['sale_id'] for b in rm_data['breakdown']]))
-                    
+
                     sales_calc_rows.append({
                         "RM Product": rm_name,
                         "Total Required (All Sales)": total_required,
                         "No. of Sales Transactions": unique_sales
                     })
                     total_sales_value += total_required * rate
-                
+
                 sales_calc_df = pd.DataFrame(sales_calc_rows)
-                
+
                 m1, m2, m3, m4 = st.columns(4)
                 with m1: st.metric("📦 Total FG Sales", len(df_fg_sales))
                 with m2: st.metric("🔧 RM Types Required", len(sales_calc_rows))
                 with m3: st.metric("💰 Total RM Value", f"₹{total_sales_value:,.2f}")
-                
+
                 def highlight_status_sales(val):
                     if val == "❌ SHORTAGE":
                         return 'background-color: #ffebee; color: #c62828; font-weight: bold'
                     else:
                         return 'background-color: #e8f5e9; color: #2e7d32; font-weight: bold'
-                
+
                 if 'Status' in sales_calc_df.columns:
                     try: styled_sales_df = sales_calc_df.style.map(highlight_status_sales, subset=['Status'])
                     except AttributeError: styled_sales_df = sales_calc_df.style.applymap(highlight_status_sales, subset=['Status'])
                     st.dataframe(styled_sales_df, use_container_width=True, hide_index=True)
                 else:
                     st.dataframe(sales_calc_df, use_container_width=True, hide_index=True)
-                
+
                 if has_shortage: pass
                 else: st.success(f"✅ **All RM materials available!** You have sufficient stock for all FG sales.")
-                
+
                 st.markdown("---")
                 st.markdown("#### 📋 Detailed Sales Transactions (FG Products)")
                 st.caption("Complete details of all FG product sales with challan numbers, dates, contractor names, and quantities")
-                
+
                 detailed_sales = df_fg_sales.copy()
                 detailed_sales = detailed_sales.rename(columns={
                     'id': 'Sale ID', 'challan_no': 'Challan No', 'date': 'Date',
@@ -2760,7 +2794,7 @@ elif page == "📈 Inventory":
                     'amount': 'Amount (₹)', 'payment_terms_days': 'Payment Days', 'due_date': 'Due Date'
                 })
                 st.dataframe(detailed_sales, use_container_width=True, hide_index=True)
-                
+
                 st.markdown("#### 👥 Sales Summary by Contractor/Party")
                 contractor_summary = df_fg_sales.groupby('party_name').agg({
                     'qty': 'sum', 'amount': 'sum', 'id': 'count'
@@ -2768,7 +2802,7 @@ elif page == "📈 Inventory":
                 contractor_summary.columns = ['Contractor / Party', 'Total FG Qty Sold', 'Total Sales Value (₹)', 'No. of Transactions']
                 contractor_summary = contractor_summary.sort_values('Total Sales Value (₹)', ascending=False)
                 st.dataframe(contractor_summary, use_container_width=True, hide_index=True)
-                
+
                 with st.expander("🔍 View Detailed RM Breakdown by Sale Transaction"):
                     st.markdown("**RM Requirements Breakdown:**")
                     st.caption("Shows which sale transactions contributed to each RM requirement")
@@ -2786,7 +2820,7 @@ elif page == "📈 Inventory":
                         rm_breakdown_df = pd.DataFrame(rm_breakdown_rows)
                         st.dataframe(rm_breakdown_df, use_container_width=True, hide_index=True)
                         st.markdown(f"**Total RM Required: {rm_data['total_required']:.2f}**")
-                
+
                 st.markdown("---")
                 st.markdown("#### 💾 Action: Consume RM Stock for All Sales")
                 st.caption("Click below to deduct RM quantities for all FG sales from your inventory.")
@@ -2795,7 +2829,7 @@ elif page == "📈 Inventory":
                     consume_reason_sales = st.text_input("Reason / Reference", key="consume_reason_sales_input", placeholder="e.g., MONTHLY-SALES-CONSUMPTION")
                 with consume_col2:
                     consume_date_sales = st.date_input("Date", datetime.now(), key="consume_date_sales_input")
-                
+
                 if st.button(f"💥 Consume RM Stock for All FG Sales", type="primary", key="consume_rm_sales_btn", disabled=has_shortage):
                     if has_shortage:
                         st.error("❌ Cannot consume — shortage exists. Please fix shortage first.")
@@ -2821,14 +2855,14 @@ elif page == "📈 Inventory":
         st.markdown("---")
         st.markdown("#### 🧮 Manual FG to RM Calculator")
         st.info("💡 Select OR type any FG product name and enter the quantity to calculate all required Raw Materials based on BOM.")
-        
+
         df_fg_products = fetch_data("""
         SELECT product_name FROM product_master
         WHERE category IN ('FG Product', 'Moulding Product')
         ORDER BY product_name
         """)
         fg_product_list = df_fg_products['product_name'].tolist() if not df_fg_products.empty else []
-        
+
         fg_input_mode = st.radio("How do you want to enter the FG Product?",
                                  ["Select from List", "Type Manually (Any FG Name)"],
                                  horizontal=True, key="fg_input_mode")
@@ -2844,11 +2878,11 @@ elif page == "📈 Inventory":
             calc_fg_product = st.text_input("📦 Type FG Product Name (must match BOM exactly)",
                                             key="calc_fg_product_manual",
                                             placeholder="e.g., 5A SSC with JB, TSSC, 15A DSSC with JB")
-        
+
         col_calc1, col_calc2 = st.columns([2, 1])
         with col_calc1:
             calc_fg_qty = st.number_input("🔢 Enter FG Quantity (Sales Qty)", min_value=0.0, step=1.0, value=1.0, key="calc_fg_qty")
-        
+
         if st.button("🔄 Calculate RM Requirements", type="primary", key="calc_rm_btn"):
             if calc_fg_product and calc_fg_product.strip() and calc_fg_qty > 0:
                 calc_fg_product = calc_fg_product.strip()
@@ -2857,7 +2891,7 @@ elif page == "📈 Inventory":
                 FROM bom_master
                 WHERE fg_product = ?
                 """, (calc_fg_product,))
-                
+
                 if bom_items.empty:
                     st.warning(f"⚠️ No BOM defined for '{calc_fg_product}'. Please add BOM entries in Masters → BOM tab.")
                     available_bom = fetch_data("SELECT DISTINCT fg_product FROM bom_master ORDER BY fg_product")
@@ -2897,7 +2931,7 @@ elif page == "📈 Inventory":
                             "Status": status
                         })
                         total_rm_value += total_required * rate
-                    
+
                     calc_df = pd.DataFrame(calc_rows)
                     m1, m2, m3, m4 = st.columns(4)
                     with m1: st.metric("📦 Total RM Types", len(calc_rows))
@@ -2908,22 +2942,22 @@ elif page == "📈 Inventory":
                     with m4:
                         ok_items = len([r for r in calc_rows if r["Status"] == "✅ OK"])
                         st.metric("✅ Items Available", ok_items)
-                    
+
                     def highlight_status(val):
                         if val == "❌ SHORTAGE":
                             return 'background-color: #ffebee; color: #c62828; font-weight: bold'
                         else:
                             return 'background-color: #e8f5e9; color: #2e7d32; font-weight: bold'
-                    
+
                     try: styled_df = calc_df.style.map(highlight_status, subset=['Status'])
                     except AttributeError: styled_df = calc_df.style.applymap(highlight_status, subset=['Status'])
                     st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                    
+
                     if has_shortage:
                         st.error(f"⚠️ **Shortage Alert:** {shortage_items} RM material(s) are insufficient for this FG quantity.")
                     else:
                         st.success(f"✅ **All RM materials available!** You have sufficient stock to produce/sell {calc_fg_qty} units of {calc_fg_product}.")
-                    
+
                     st.markdown("---")
                     st.markdown("#### 💾 Action: Consume RM from Stock")
                     st.caption("Click below to actually deduct these RM quantities from your inventory (as if FG was produced/sold).")
@@ -2934,7 +2968,7 @@ elif page == "📈 Inventory":
                                                        placeholder="e.g., SALE-001, PROD-001")
                     with consume_col2:
                         consume_date = st.date_input("Date", datetime.now(), key="consume_date_input")
-                    
+
                     if st.button(f"💥 Consume RM Stock for {calc_fg_qty} x {calc_fg_product}",
                                  type="primary",
                                  key="consume_rm_stock_btn",
@@ -2962,7 +2996,7 @@ elif page == "📋 Reports":
     report_type = st.selectbox("Select Report Type", 
         ["Production Summary", "Sales Summary", "Purchase Summary", 
          "Contractor Performance", "Party-wise Sales", "Rejection Analysis", "Stock Movement", "Overdue Payments"])
-         
+
     if report_type == "Production Summary":
         st.markdown("### Production Summary Report")
         df = fetch_data("""
@@ -2974,7 +3008,7 @@ elif page == "📋 Reports":
             st.bar_chart(df.set_index('fg_product')['total_produced'])
         else:
             st.info("No production data available")
-            
+
     elif report_type == "Sales Summary":
         st.markdown("### Sales Summary Report")
         df = fetch_data("""
@@ -2986,7 +3020,7 @@ elif page == "📋 Reports":
             st.bar_chart(df.set_index('product_name')['total_amount'])
         else:
             st.info("No sales data available")
-            
+
     elif report_type == "Purchase Summary":
         st.markdown("### Purchase Summary Report")
         df = fetch_data("""
@@ -2998,7 +3032,7 @@ elif page == "📋 Reports":
             st.bar_chart(df.set_index('product_name')['total_amount'])
         else:
             st.info("No purchase data available")
-            
+
     elif report_type == "Contractor Performance":
         st.markdown("### Contractor Performance Report")
         df = fetch_data("""
@@ -3010,7 +3044,7 @@ elif page == "📋 Reports":
             st.bar_chart(df.set_index('party_name')['total_produced'])
         else:
             st.info("No production data available")
-            
+
     elif report_type == "Party-wise Sales":
         st.markdown("### Party-wise Sales Report")
         df = fetch_data("""
@@ -3022,7 +3056,7 @@ elif page == "📋 Reports":
             st.bar_chart(df.set_index('party_name')['total_amount'])
         else:
             st.info("No sales data available")
-            
+
     elif report_type == "Rejection Analysis":
         st.markdown("### Rejection Analysis Report")
         col1, col2 = st.columns(2)
@@ -3038,7 +3072,7 @@ elif page == "📋 Reports":
             if not df_pr.empty:
                 st.dataframe(df_pr, use_container_width=True)
                 st.bar_chart(df_pr.set_index('product_name')['total_rejected'])
-                
+
     elif report_type == "Stock Movement":
         st.markdown("### Stock Movement Report")
         tab1, tab2 = st.tabs(["RM Movement", "FG Movement"])
@@ -3050,7 +3084,7 @@ elif page == "📋 Reports":
             df = fetch_data("SELECT product_name, opening_stock, (produced_qty + purchased_qty) as additions, (sold_qty + rejected_qty) as deductions, closing_stock FROM fg_inventory ORDER BY product_name")
             if not df.empty:
                 st.dataframe(df, use_container_width=True)
-                
+
     elif report_type == "Overdue Payments":
         st.markdown("### Overdue Payments Report")
         overdue = check_overdue_payments()
@@ -3064,7 +3098,7 @@ elif page == "📋 Reports":
             with col3:
                 st.metric("Average Days Overdue", f"{int(overdue['days_overdue'].mean())} days")
             st.dataframe(overdue, use_container_width=True)
-            
+
             st.markdown("### Overdue by Party")
             df_party_overdue = fetch_data("""
                 SELECT party_name, COUNT(*) as count, SUM(balance_amount) as total_overdue, AVG(julianday(date('now')) - julianday(due_date)) as avg_days
@@ -3084,7 +3118,7 @@ elif page == "📋 Reports":
 elif page == "📤 Import/Export":
     st.subheader("📤 Data Import/Export")
     tab1, tab2 = st.tabs(["Import Excel", "Export Data"])
-    
+
     with tab1:
         st.markdown("### Import Data from Excel")
         uploaded_file = st.file_uploader("Choose Excel file", type=['xlsx', 'xls'])
@@ -3097,7 +3131,7 @@ elif page == "📤 Import/Export":
                         elif "❌" in msg: st.error(msg)
                 st.success("✅ Import completed!")
                 if st.button("Refresh"): st.rerun()
-                
+
     with tab2:
         st.markdown("### Export All Data to Excel")
         if st.button("Generate Excel Export", type="primary"):
