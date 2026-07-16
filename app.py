@@ -1943,7 +1943,6 @@ elif page == "💰 Sales Entry":
                         # Reverse Old Product Inventory
                         if old_prod_cat == 'RM Product':
                             # If it was an RM sale, we add back the stock (reverse the sale)
-                            update_rm_inventory(old_product, old_qty, 'SALE_REVERSAL', old_date, old_challan, rate=old_rate) # Note: You might need to handle reversal logic in update_rm_inventory or just do direct SQL
                             # Simpler approach: Direct SQL adjustment for reversal to avoid complex logic in helper
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                             execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (old_qty, old_product))
