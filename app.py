@@ -1828,7 +1828,7 @@ elif page == "💰 Sales Entry":
                                 available = float(val) if pd.notna(val) else 0.0
 
                         if available < qty:
-                            st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
+                             raise Exception(f"🚫 Insufficient Stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}. Sale Entry Blocked.")
                         else:
                             sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
                             due_date = sale_date_dt + timedelta(days=payment_days)
@@ -1889,6 +1889,8 @@ elif page == "💰 Sales Entry":
                         if prod_cat == 'RM Product':
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (qty, product))
                             execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (qty, product))
+                            # Properly maintain movement log by deleting the sale record
+                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (selected_id,))
                         else:
                             execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (qty, product))
                             execute_query("""
@@ -1975,11 +1977,11 @@ elif page == "💰 Sales Entry":
 
                         # Reverse Old Product Inventory
                         if old_prod_cat == 'RM Product':
-                            # If it was an RM sale, we add back the stock (reverse the sale)
-                            update_rm_inventory(old_product, old_qty, 'SALE_REVERSAL', old_date, old_challan, rate=old_rate) # Note: You might need to handle reversal logic in update_rm_inventory or just do direct SQL
-                            # Simpler approach: Direct SQL adjustment for reversal to avoid complex logic in helper
+    # Reverse the old sale inventory
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                             execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (old_qty, old_product))
+                            # Properly maintain movement log by deleting the old sale record
+                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
                         else:
                             # FG Sale Reversal
                             execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
