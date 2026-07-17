@@ -284,45 +284,45 @@ def calculate_rm_opening_balance(product_name, before_date=None):
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
-
-    # Logic: Only Purchase adds stock. Sale removes stock.
+    
+    # Logic: Purchase adds stock. Sale removes stock.
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'SALE': # If RM is sold directly
-        # CHECK FOR NEGATIVE STOCK
+    elif transaction_type == 'SALE': 
+        # CHECK FOR NEGATIVE STOCK STRICTLY
         if opening_balance < qty:
             raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
-
         closing_balance = opening_balance - qty
+        # For RM Sales, we track it as consumed/sold out of inventory
         execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
     else:
         closing_balance = opening_balance
-
+        
     # Insert movement record.
     display_type = transaction_type
     execute_query('''INSERT INTO rm_stock_movement
     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
     (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
-
+    
     result = fetch_data("""
     SELECT COALESCE(opening_stock, 0) as opening_stock,
     COALESCE(total_purchased_qty, 0) as total_purchased,
     COALESCE(total_consumed_qty, 0) as total_consumed
     FROM rm_inventory WHERE product_name = ?
     """, (product,))
-
+    
     if not result.empty:
         opening = result['opening_stock'].iloc[0]
         purchased = result['total_purchased'].iloc[0]
-        consumed = result['total_consumed'].iloc[0] 
+        consumed = result['total_consumed'].iloc[0]
         closing_stock = opening + purchased - consumed
         execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))
-
+        
     if rate > 0:
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
-
+        
     return closing_balance
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
@@ -1321,9 +1321,11 @@ elif page == "🛒 Purchase Entry":
                         qty = record['qty'].iloc[0]
                         prod_cat = record['product_category'].iloc[0]
                         if prod_cat == 'RM Product':
-                            execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                            execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (qty, product))
-                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
+                            execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (qty, product))
+                            execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (qty, product))
+                # Properly maintain movement log by deleting the sale record
+                        execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (selected_id,))
+            
                             # Recalculate running balance for RM movements
                             movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
                             if not movements.empty:
@@ -1335,7 +1337,7 @@ elif page == "🛒 Purchase Entry":
                                         running_balance -= mov['qty']
                                     execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
                         else:
-                            execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
+                            execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (qty, product))
                             execute_query("""
                             UPDATE fg_inventory
                             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
@@ -1430,9 +1432,11 @@ elif page == "🛒 Purchase Entry":
                         else:
                             # Product Changed: Revert Old, Add New
                             if old_prod_cat == 'RM Product':
-                                execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                                execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                                execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
+                                execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (old_qty, old_product))
+                                # Properly maintain movement log by deleting the old sale record
+                                execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
+                            
                                 movements_old = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (old_product,))
                                 if not movements_old.empty:
                                     running_balance = calculate_rm_opening_balance(old_product, movements_old['transaction_date'].iloc[0])
@@ -1443,7 +1447,7 @@ elif page == "🛒 Purchase Entry":
                                             running_balance -= mov['qty']
                                         execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
                             else:
-                                execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                                execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                                 execute_query("""
                                 UPDATE fg_inventory
                                 SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
@@ -1452,10 +1456,10 @@ elif page == "🛒 Purchase Entry":
                             # Add New Product Inventory
                             if edit_product_category == 'RM Product':
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
-                                update_rm_inventory(edit_product, edit_qty, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, edit_rate)
+                                update_rm_inventory(edit_product, edit_qty, 'SALE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate)
                             else:
                                 execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
-                                update_fg_inventory(edit_product, edit_qty, 'PURCHASE')
+                                update_fg_inventory(edit_product, edit_qty, 'SALE')
                         st.success("✅ Purchase entry updated successfully!")
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
@@ -1813,6 +1817,8 @@ elif page == "💰 Sales Entry":
                     if not existing_challan.empty:
                         st.error(f"❌ Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
                     else:
+                                    # ... inside try block after checking unique challan ...
+            
                         available = 0.0
                         # Determine correct inventory table based on product category
                         if actual_prod_cat == 'RM Product':
@@ -1826,37 +1832,39 @@ elif page == "💰 Sales Entry":
                             if not df_stock.empty:
                                 val = df_stock['closing_stock'].iloc[0]
                                 available = float(val) if pd.notna(val) else 0.0
-
+                        
+                        # STRICT VALIDATION: Block entry if insufficient stock
                         if available < qty:
-                             raise Exception(f"🚫 Insufficient Stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}. Sale Entry Blocked.")
+                            raise Exception(f"🚫 Insufficient Stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}. Sale Entry Blocked.")
+            
+                        sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
+                        due_date = sale_date_dt + timedelta(days=payment_days)
+                        sale_amount = qty * rate
+                        
+                        # 1. Insert Sales Transaction
+                        execute_query('''INSERT INTO sales_transactions
+                        (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
+                        
+                        # Get the ID of the newly inserted sale for reference
+                        new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
+                        
+                        # 2. Update Inventory
+                        if actual_prod_cat == 'RM Product':
+                            # This will now handle the stock deduction and movement log for RM Sales
+                            update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
                         else:
-                            sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
-                            due_date = sale_date_dt + timedelta(days=payment_days)
-                            sale_amount = qty * rate
-
-                            # 1. Insert Sales Transaction
-                            execute_query('''INSERT INTO sales_transactions
-                            (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                            (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
-
-                            # Get the ID of the newly inserted sale for reference
-                            new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
-
-                            # 2. Update Inventory
-                            if actual_prod_cat == 'RM Product':
-                                update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
-                            else:
-                                # Use the updated update_fg_inventory function
-                                update_fg_inventory(product, qty, 'SALE')
-
-                            # 3. Create Receivable Entry
-                            create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
-
-                            st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
-                            st.balloons()
-                            # Force immediate rerun to reflect changes in dashboard/ledger
-                            st.rerun()
+                            # Use the updated update_fg_inventory function
+                            update_fg_inventory(product, qty, 'SALE')
+                            
+                        # 3. Create Receivable Entry
+                        create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
+                        
+                        st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
+                        st.balloons()
+                        # Force immediate rerun to reflect changes in dashboard/ledger
+                        st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
             else:
