@@ -1324,7 +1324,7 @@ elif page == "🛒 Purchase Entry":
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (qty, product))
                             execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (qty, product))
                 # Properly maintain movement log by deleting the sale record
-                        execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (selected_id,))
+                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (selected_id,))
             
                             # Recalculate running balance for RM movements
                             movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
