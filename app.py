@@ -1755,6 +1755,7 @@ elif page == "🏭 Production Entry":
                     st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
 
     # Edit Mode Logic for Production
+        # Edit Mode Logic for Production
     if st.session_state.edit_mode and st.session_state.edit_table == 'production':
         st.markdown("### ✏️ Edit Production Entry")
         production_data = fetch_data("SELECT * FROM production_register WHERE id = ?", (st.session_state.edit_id,))
@@ -1879,7 +1880,6 @@ elif page == "🏭 Production Entry":
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
                         st.rerun()
-
     st.markdown("### All Production Entries")
     if not df_all_production.empty:
         st.dataframe(df_all_production, use_container_width=True)
