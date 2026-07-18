@@ -1492,80 +1492,86 @@ elif page == "🛒 Purchase Entry":
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.form_submit_button("💾 Save Changes", type="primary"):
-                        old_qty = row['qty']
-                        old_product = row['product_name']
-                        old_prod_cat = row['product_category']
-                        old_date = row['date']
-                        old_challan = row['challan_no']
-                        qty_diff = edit_qty - old_qty
-                        # Update Transaction Record
-                        execute_query('''UPDATE purchase_transactions SET
-                        challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?
-                        WHERE id=?''',
-                        (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
-                        # Update Inventory Logic
-                                        # Update Inventory Logic
-                                        # 2. Adjust Inventory (Reverse Old, Apply New)
-                
-                        if old_product == edit_product and old_prod_cat == edit_product_category:
-                            # CASE 1: Same Product & Category -> UPDATE Existing Movement Record
-                            if qty_diff != 0:
-                                if old_prod_cat == 'RM Product':
-                                    execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                    # Update Movement Record Qty
-                                    execute_query("UPDATE rm_stock_movement SET qty = ? WHERE reference_id = ? AND transaction_type = 'SALE'",
-                                                  (edit_qty, st.session_state.edit_id))
-                                    # Recalculate Balances Realtime
-                                    update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate)
-                                else:
-                                    execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                    execute_query("""
-                                    UPDATE fg_inventory
-                                    SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                    WHERE product_name = ?
-                                    """, (edit_product,))
-                        else:
-                            # CASE 2: Product Changed -> DELETE Old, INSERT New
-                            # --- REVERSE OLD ENTRY ---
+                    old_qty = row['qty']
+                    old_product = row['product_name']
+                    old_prod_cat = row['product_category'] # Note: In purchase_transactions, this might be stored in 'product_category' or derived
+                    old_date = row['date']
+                    old_challan = row['challan_no']
+                    
+                    qty_diff = edit_qty - old_qty
+                    
+                    # Update Transaction Record
+                    execute_query('''UPDATE purchase_transactions SET
+                    challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?
+                    WHERE id=?''',
+                    (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
+                    
+                    # Update Inventory Logic
+                    if old_product == edit_product and old_prod_cat == edit_product_category:
+                        # CASE 1: Same Product & Category -> UPDATE Existing Movement Record
+                        if qty_diff != 0:
                             if old_prod_cat == 'RM Product':
-                                # Reverse RM Sale
-                                execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
-                                execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                                # Recalculate Old Product
-                                update_rm_inventory(old_product, 0, 'PURCHASE')
+                                # Correct Logic for RM Purchase Edit:
+                                # 1. Update the total purchased quantity in master
+                                execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                 
+                                # 2. Update the specific movement record quantity
+                                execute_query("UPDATE rm_stock_movement SET qty = ? WHERE reference_id = ? AND transaction_type = 'PURCHASE'",
+                                (edit_qty, st.session_state.edit_id))
+                                
+                                # 3. Recalculate Balances Realtime (This handles opening/closing balance consistency)
+                                update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate)
                             else:
-                                # Reverse FG Sale
-                                execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                                # Logic for FG/Moulding Purchase Edit
+                                execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                 execute_query("""
                                 UPDATE fg_inventory
                                 SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                 WHERE product_name = ?
-                                """, (old_product,))
-        
-                            # --- APPLY NEW ENTRY ---
-                            if edit_product_category == 'RM Product':
-                                execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
-                                # Add new movement record
-                                execute_query('''INSERT INTO rm_stock_movement
-                                (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
-                                VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
-                                (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'SALE', edit_qty, st.session_state.edit_id))
-                                
-                                # Update Master Totals
-                                execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
-                                
-                                # Recalculate Balances for New Product
-                                update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate) 
-                                
-                            else:
-                                # FG Sale
-                                execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
-                                update_fg_inventory(edit_product, edit_qty, 'SALE')
-                        st.success("✅ Purchase entry updated successfully!")
-                        st.session_state.edit_mode = False
-                        st.session_state.edit_id = None
-                        st.rerun()
+                                """, (edit_product,))
+                    else:
+                        # CASE 2: Product Changed -> DELETE Old, INSERT New
+                        
+                        # --- REVERSE OLD ENTRY ---
+                        if old_prod_cat == 'RM Product':
+                            # Reverse Old RM Purchase
+                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
+                            execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                            # Recalculate Old Product Balance
+                            update_rm_inventory(old_product, 0, 'PURCHASE')
+                        else:
+                            # Reverse Old FG Purchase
+                            execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                            execute_query("""
+                            UPDATE fg_inventory
+                            SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                            WHERE product_name = ?
+                            """, (old_product,))
+                            
+                        # --- APPLY NEW ENTRY ---
+                        if edit_product_category == 'RM Product':
+                            execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
+                            
+                            # Add new movement record for PURCHASE
+                            execute_query('''INSERT INTO rm_stock_movement
+                            (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+                            VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
+                            (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'PURCHASE', edit_qty, st.session_state.edit_id))
+                            
+                            # Update Master Totals
+                            execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+                            
+                            # Recalculate Balances for New Product
+                            update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate)
+                        else:
+                            # FG Purchase
+                            execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
+                            update_fg_inventory(edit_product, edit_qty, 'PURCHASE') # Note: Ensure update_fg_inventory handles 'PURCHASE' type correctly if not already handled by direct SQL above
+    
+                    st.success("✅ Purchase entry updated successfully!")
+                    st.session_state.edit_mode = False
+                    st.session_state.edit_id = None
+                    st.rerun()
                 with col2:
                     if st.form_submit_button("❌ Cancel"):
                         st.session_state.edit_mode = False
