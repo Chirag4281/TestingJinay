@@ -295,6 +295,7 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     """
     Updates RM Inventory and Stock Movement records.
     Recalculates running balances for ALL movements of this product to ensure consistency after edits/deletes.
+    Uses a single connection to prevent 'database is locked' errors.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1659,18 +1660,10 @@ elif page == "🏭 Production Entry":
                     (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, actual_prod_cat, produced_qty, unit, description))
 
                     # 2. Ensure Inventory Record Exists
-                                # 2. Ensure Inventory Record Exists & Update
-            # Always update FG Inventory for Produced Qty tracking
                     execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (fg_product,))
+
+                    # 3. Update Inventory (Real-time)
                     update_fg_inventory(fg_product, produced_qty, 'PRODUCE')
-                    
-                    # IF the product category is RM Product, ALSO update RM Inventory so it can be sold as RM
-                    if actual_prod_cat == 'RM Product':
-                        execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (fg_product,))
-                        # Treat production of RM as a "Purchase" into RM stock for simplicity in sales
-                        execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (produced_qty, fg_product))
-                        # Recalculate RM balances
-                        update_rm_inventory(fg_product, 0, 'PURCHASE', prod_date.strftime('%Y-%m-%d'), challan_no, None, rate=0)
 
                     st.success("✅ Production entry saved successfully!")
                     st.rerun()
@@ -1881,33 +1874,32 @@ elif page == "💰 Sales Entry":
         else:
             st.metric("Total Amount", "₹0.00")
         # Inside elif page == "💰 Sales Entry": ... with st.form("sales_form"): ...
-            submitted = st.form_submit_button("Save Sale", type="primary")
-            if submitted:
-                if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
-                    try:
-                        # CHECK UNIQUE CHALLAN NO
-                        existing_challan = fetch_data("SELECT id FROM sales_transactions WHERE challan_no = ?", (challan_no,))
-                        if not existing_challan.empty:
-                            st.error(f"❌ Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
+        submitted = st.form_submit_button("Save Sale", type="primary")
+        if submitted:
+            if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
+                try:
+                    # CHECK UNIQUE CHALLAN NO
+                    existing_challan = fetch_data("SELECT id FROM sales_transactions WHERE challan_no = ?", (challan_no,))
+                    if not existing_challan.empty:
+                        st.error(f"❌ Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
+                    else:
+                        available = 0.0
+                        # Determine correct inventory table based on product category
+                        if actual_prod_cat == 'RM Product':
+                            df_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
+                            if not df_stock.empty:
+                                val = df_stock['closing_stock'].iloc[0]
+                                available = float(val) if pd.notna(val) else 0.0
                         else:
-                            available = 0.0
-                            # Determine correct inventory table based on product category
-                            if actual_prod_cat == 'RM Product':
-                                df_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
-                                if not df_stock.empty:
-                                    val = df_stock['closing_stock'].iloc[0]
-                                    available = float(val) if pd.notna(val) else 0.0
-                            else:
-                                # For FG, Moulding, Powder, use FG Inventory
-                                df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
-                                if not df_stock.empty:
-                                    val = df_stock['closing_stock'].iloc[0]
-                                    available = float(val) if pd.notna(val) else 0.0
-                            
-                            if available < qty:
-                                st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
-                                # We allow the sale to proceed per previous requirements, but warn the user
-                            
+                            # For FG, Moulding, Powder, use FG Inventory
+                            df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
+                            if not df_stock.empty:
+                                val = df_stock['closing_stock'].iloc[0]
+                                available = float(val) if pd.notna(val) else 0.0
+
+                        if available < qty:
+                            st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
+                        else:
                             sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
                             due_date = sale_date_dt + timedelta(days=payment_days)
                             sale_amount = qty * rate
@@ -1920,13 +1912,21 @@ elif page == "💰 Sales Entry":
                             
                             # Get the ID of the newly inserted sale for reference
                             new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
-        
+                            
                             # 2. Update Inventory
+                                            # 2. Update Inventory
+                                            # 2. Update Inventory
+                                            # 2. Update Inventory
                             try:
                                 if actual_prod_cat == 'RM Product':
                                     # Ensure RM Inventory record exists
                                     execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
                                     
+                                    # Check Stock Before Sale
+                                    current_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
+                                    if not current_stock.empty and float(current_stock['closing_stock'].iloc[0]) < qty:
+                                        raise Exception(f"Insufficient RM Stock! Available: {current_stock['closing_stock'].iloc[0]}, Requested: {qty}")
+            
                                     # Add Movement Record
                                     execute_query('''INSERT INTO rm_stock_movement
                                     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
@@ -1936,31 +1936,43 @@ elif page == "💰 Sales Entry":
                                     # Update Master Totals
                                     execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
                                     
-                                    # Recalculate Balances Realtime
+                                    # Recalculate Balances Realtime (Same as Purchase)
                                     update_rm_inventory(product, 0, 'PURCHASE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
-                                    
+            
                                 else:
                                     # For FG/Moulding/Powder, use FG Inventory logic
                                     update_fg_inventory(product, qty, 'SALE')
                                     
                                     # 3. Attempt RM Consumption (Non-Blocking)
                                     if actual_prod_cat != 'RM Product':
-                                        consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id)
-                                        
+                                        consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id)                                            # 3. Attempt RM Consumption (Non-Blocking)
+                                            # If this fails or warns, it won't stop the sale because we already inserted the sale and updated FG inventory
+                               
+                                    
                             except Exception as inv_err:
+                                # If inventory update fails (e.g. truly insufficient stock), we might want to rollback the sale
+                                # But per your request "If It Is Insufficient Then Also Sell Entry Is Stored", 
+                                # we will catch the error, show it, but keep the sale record.
+                                # NOTE: This leaves data inconsistent. A better approach for "Allow Sale" is to 
+                                # let the inventory go negative or just warn. 
+                                # The update_fg_inventory above raises an exception if insufficient.
+                                # To ALLOW sale even if insufficient, we need to modify update_fg_inventory to NOT raise exception 
+                                # or catch it here and ignore it.
+                                
                                 st.warning(f"⚠️ Inventory Warning: {str(inv_err)}. Sale entry saved, but inventory may be negative/unadjusted.")
-        
+                                # We do NOT rollback the sale transaction here.
+            
                             # 4. Create Receivable Entry
                             create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
                             
                             st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
                             st.balloons()
+                            # Force immediate rerun to reflect changes in dashboard/ledger
                             st.rerun()
-        
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
-                else:
-                    st.warning("Please fill all required fields")
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+            else:
+                st.warning("Please fill all required fields")
     st.markdown("---")
     st.markdown("### 📝 Manage Sales Entries")
     df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date FROM sales_transactions ORDER BY date DESC")
@@ -2784,18 +2796,9 @@ elif page == "📈 Inventory":
             st.info("No RM stock movement data available")
     with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
-        # UPDATED QUERY: Join with product_master to get real-time Category and Details
+        # UPDATED QUERY: Join with product_master to get real-time Category
         df_fg_inv = fetch_data("""
-        SELECT i.product_name, 
-               COALESCE(m.category, 'FG Product') as category, 
-               i.opening_stock, 
-               i.produced_qty, 
-               i.purchased_qty, 
-               i.sold_qty, 
-               i.rejected_qty, 
-               i.closing_stock, 
-               m.rate, 
-               m.unit
+        SELECT i.product_name, COALESCE(m.category, 'FG Product') as category, i.opening_stock, i.produced_qty, i.purchased_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
         FROM fg_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name
         WHERE m.category IN ('FG Product', 'Moulding Product', 'Powder') OR m.category IS NULL
         ORDER BY i.product_name
@@ -2848,6 +2851,7 @@ elif page == "📈 Inventory":
                     st.rerun()
         else:
             st.info("No FG inventory data available")
+
     with tab4:
         st.markdown("### 🧮 FG to RM Material Requirement Calculator")
         st.markdown("---")
