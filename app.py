@@ -1360,61 +1360,92 @@ elif page == "🛒 Purchase Entry":
     st.markdown("---")
     st.markdown("### 📋 Manage Purchase Entries")
     df_all_purchases = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount FROM purchase_transactions ORDER BY date DESC")
+    
     if not df_all_purchases.empty:
         purchase_options = [f"ID:{row['id']} | {row['challan_no']} | {row['product_name']} | {row['qty']} {row['unit']} | ₹{row['amount']:,.2f} | {row['date']}" for _, row in df_all_purchases.iterrows()]
         selected_purchase = st.selectbox("Select Purchase Entry to Edit/Delete", purchase_options, key="select_purchase_manage")
-        selected_id = int(selected_purchase.split('|')[0].replace('ID:', '').strip()) if selected_purchase else None
+        
+        # Safely extract ID
+        selected_id = None
+        if selected_purchase:
+            try:
+                selected_id = int(selected_purchase.split('|')[0].replace('ID:', '').strip())
+            except:
+                selected_id = None
+    
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✏️ Edit Selected Purchase", type="primary", key="edit_purchase_btn"):
-                st.session_state.edit_mode = True
-                st.session_state.edit_id = selected_id
-                st.session_state.edit_table = 'purchase'
-                st.rerun()
+                if selected_id:
+                    st.session_state.edit_mode = True
+                    st.session_state.edit_id = selected_id
+                    st.session_state.edit_table = 'purchase'
+                    st.rerun()
+                else:
+                    st.warning("Please select a purchase entry first.")
+                    
         with col2:
             if st.button("🗑️ Delete Selected Purchase", key="delete_purchase_btn"):
-                if st.session_state.get('confirm_delete_purchase'):
+                if not selected_id:
+                    st.warning("Please select a purchase entry to delete.")
+                    
+                # FIX: Store the selected_id in session state to prevent deleting the wrong item 
+                # if the user changes the dropdown selection after clicking delete once.
+                elif st.session_state.get('confirm_delete_purchase') == selected_id:
                     record = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (selected_id,))
                     if not record.empty:
                         product = record['product_name'].iloc[0]
                         qty = float(record['qty'].iloc[0])
-                        prod_cat = record['product_category'].iloc[0]
+                        
+                        # FIX: Safely get product_category. Fallback to checking rm_inventory if NULL.
+                        prod_cat = record['product_category'].iloc[0] if pd.notna(record['product_category'].iloc[0]) else None
+                        if prod_cat is None:
+                            rm_check = fetch_data("SELECT product_name FROM rm_inventory WHERE product_name = ?", (product,))
+                            prod_cat = 'RM Product' if not rm_check.empty else 'FG Product'
+    
                         challan_no_del = record['challan_no'].iloc[0]
-                        party_name_del = record['party_name'].iloc[0]
-        
-                    if prod_cat == 'RM Product':
-                    # Reverse RM Purchase: Delete movement record first
-                        execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
-                        # Then reverse master totals
-                        execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                        # Recalculate Balances Realtime
-                        update_rm_inventory(product, 0, 'PURCHASE') 
-                    else:
-                        # Reverse FG Purchase
-                        execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                        execute_query("""
-                        UPDATE fg_inventory
-                        SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                        WHERE product_name = ?
-                        """, (product,))
-        
-                        # Delete from Ledger (Payable)
-                        execute_query("""
-                        DELETE FROM payable_receivable_ledger
-                        WHERE transaction_type = 'PAYABLE'
-                        AND challan_no = ?
-                        AND party_name = ?
-                        """, (challan_no_del, party_name_del))
-        
-                        # Delete Purchase Transaction
-                        execute_query("DELETE FROM purchase_transactions WHERE id = ?", (selected_id,))
-        
-                        st.success("✅ Purchase entry deleted and inventory updated!")
-                        st.session_state['confirm_delete_purchase'] = False
-                        st.rerun()
+                        party_name_del = record['party_name'].iloc[0] if pd.notna(record['party_name'].iloc[0]) else ""
+                        
+                        try:
+                            # 1. Reverse Inventory
+                            if prod_cat == 'RM Product':
+                                # Delete Movement Record first
+                                execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
+                                # Reverse Master Totals
+                                execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
+                                # Recalculate Balances Realtime (Uses single connection to prevent DB locks)
+                                update_rm_inventory(product, 0, 'PURCHASE') 
+                            else:
+                                # Reverse FG Purchase
+                                execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
+                                execute_query("""
+                                UPDATE fg_inventory
+                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                                WHERE product_name = ?
+                                """, (product,))
+    
+                            # 2. Delete from Ledger (Payable)
+                            if challan_no_del and party_name_del:
+                                execute_query("""
+                                DELETE FROM payable_receivable_ledger
+                                WHERE transaction_type = 'PAYABLE'
+                                AND challan_no = ?
+                                AND party_name = ?
+                                """, (challan_no_del, party_name_del))
+    
+                            # 3. Delete Purchase Transaction
+                            execute_query("DELETE FROM purchase_transactions WHERE id = ?", (selected_id,))
+    
+                            st.success(f"✅ Purchase entry (ID: {selected_id}) deleted and inventory updated successfully!")
+                            st.session_state['confirm_delete_purchase'] = None # Reset confirmation
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error deleting entry: {str(e)}")
                 else:
-                    st.session_state['confirm_delete_purchase'] = True
-                    st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
+                    # First click: Set confirmation state tied to this specific ID
+                    st.session_state['confirm_delete_purchase'] = selected_id
+                    st.warning(f"⚠️ Are you sure? Click 'Delete' again to confirm. This will reverse inventory and ledger changes for ID: {selected_id}.")
     if st.session_state.edit_mode and st.session_state.edit_table == 'purchase':
         st.markdown("### ✏️ Edit Purchase Entry")
         purchase_data = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (st.session_state.edit_id,))
