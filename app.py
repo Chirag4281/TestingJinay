@@ -271,13 +271,12 @@ def fetch_data(query, params=()):
 
 def calculate_rm_opening_balance(product_name, before_date=None):
     """Calculate opening balance for a product up to a specific date"""
-    # Note: We only look at PURCHASE and SALE (if RM is sold directly). 
-    # Consumption is removed from RM logic as per request.
+    # Logic: Only consider PURCHASE and SALE movements for RM Stock Calculation
     if before_date:
         query = """
         SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty
-                                 WHEN transaction_type='SALE' THEN -qty
-                                 ELSE 0 END), 0) as balance
+        WHEN transaction_type='SALE' THEN -qty
+        ELSE 0 END), 0) as balance
         FROM rm_stock_movement
         WHERE product_name = ? AND transaction_date < ?
         """
@@ -285,55 +284,76 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     else:
         query = """
         SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty
-                                 WHEN transaction_type='SALE' THEN -qty
-                                 ELSE 0 END), 0) as balance
+        WHEN transaction_type='SALE' THEN -qty
+        ELSE 0 END), 0) as balance
         FROM rm_stock_movement
         WHERE product_name = ?
         """
         result = fetch_data(query, (product_name,))
+    
     return result['balance'].iloc[0] if not result.empty else 0
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
+    """
+    Updates RM Inventory and Stock Movement.
+    ONLY Purchase and Sale affect the main stock counts.
+    """
+    # 1. Calculate Opening Balance based on previous PURCHASES and SALES only
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
-
-    # Logic: Only Purchase adds stock. Sale removes stock.
+    
+    closing_balance = opening_balance
+    
+    # 2. Handle Inventory Totals & Balance Calculation
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
+        # Update cumulative purchased quantity
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'SALE': # If RM is sold directly
-        # CHECK FOR NEGATIVE STOCK
+        
+    elif transaction_type == 'SALE':
+        # STRICT CHECK: Do not allow sale if stock is insufficient
         if opening_balance < qty:
-            raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
-
+            raise Exception(f"Insufficient RM Stock for Sale! Available: {opening_balance}, Requested: {qty}")
+            
         closing_balance = opening_balance - qty
+        # Update cumulative sold quantity (stored in consumed_qty column for consistency with existing schema)
         execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
+        
+    elif transaction_type == 'CONSUMPTION':
+        # CONSUMPTION does NOT affect main stock counts per request.
+        # It still records a movement for tracking, but doesn't change closing_balance logic here.
+        closing_balance = opening_balance 
+        # Note: We do NOT update total_purchased_qty or total_consumed_qty for main stock calc
+        
     else:
         closing_balance = opening_balance
 
-    # Insert movement record.
+    # 3. Insert Stock Movement Record
     display_type = transaction_type
     execute_query('''INSERT INTO rm_stock_movement
     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
     (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
 
+    # 4. Force Recalculate Closing Stock in Main Inventory Table
+    # Formula: Opening + Total Purchased - Total Sold (Consumed)
     result = fetch_data("""
     SELECT COALESCE(opening_stock, 0) as opening_stock,
     COALESCE(total_purchased_qty, 0) as total_purchased,
-    COALESCE(total_consumed_qty, 0) as total_consumed
+    COALESCE(total_consumed_qty, 0) as total_sold
     FROM rm_inventory WHERE product_name = ?
     """, (product,))
-
+    
     if not result.empty:
         opening = result['opening_stock'].iloc[0]
         purchased = result['total_purchased'].iloc[0]
-        consumed = result['total_consumed'].iloc[0] 
-        closing_stock = opening + purchased - consumed
-        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))
-
+        sold = result['total_sold'].iloc[0]
+        calculated_closing = opening + purchased - sold
+        
+        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (calculated_closing, product))
+        
     if rate > 0:
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
-
+        
     return closing_balance
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
