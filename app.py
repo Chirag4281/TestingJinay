@@ -2586,7 +2586,7 @@ with tab2:
     st.info("This shows Purchase, Sales, and Consumption entries for Raw Materials.")
 
         # Fetch products that have movement records
-        df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
+    df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
         if not df_products.empty:
             selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
     # --- FILTERS ---
