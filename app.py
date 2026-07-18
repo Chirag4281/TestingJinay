@@ -271,12 +271,10 @@ def fetch_data(query, params=()):
 
 def calculate_rm_opening_balance(product_name, before_date=None):
     """Calculate opening balance for a product up to a specific date"""
-    # Note: We only look at PURCHASE and SALE (if RM is sold directly). 
-    # Consumption is removed from RM logic as per request.
     if before_date:
         query = """
         SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty
-                                 WHEN transaction_type='SALE' THEN -qty
+                                 WHEN transaction_type IN ('SALE', 'CONSUMPTION') THEN -qty
                                  ELSE 0 END), 0) as balance
         FROM rm_stock_movement
         WHERE product_name = ? AND transaction_date < ?
@@ -285,7 +283,7 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     else:
         query = """
         SELECT COALESCE(SUM(CASE WHEN transaction_type='PURCHASE' THEN qty
-                                 WHEN transaction_type='SALE' THEN -qty
+                                 WHEN transaction_type IN ('SALE', 'CONSUMPTION') THEN -qty
                                  ELSE 0 END), 0) as balance
         FROM rm_stock_movement
         WHERE product_name = ?
@@ -294,40 +292,30 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     return result['balance'].iloc[0] if not result.empty else 0
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
-    # Calculate opening balance up to the day before this transaction
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
     
-    closing_balance = opening_balance
-    
-    # Logic: Purchase adds stock. Sale/Consumption removes stock.
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-        
-    elif transaction_type in ['SALE', 'CONSUMPTION']: 
-        # Check for negative stock only if it's a direct sale or consumption
+    elif transaction_type == 'SALE':
         if opening_balance < qty:
-            # Allow negative stock but warn? Or block? 
-            # Per previous request, we allow sales even if insufficient, but let's track it.
-            pass 
-            
+            raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
         closing_balance = opening_balance - qty
-        
-        if transaction_type == 'SALE':
-             # If sold directly, update consumed/sold tracker if needed, or just rely on movement
-             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
-        elif transaction_type == 'CONSUMPTION':
-             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
+        execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
+    elif transaction_type == 'CONSUMPTION':
+        # Fix: Properly handle consumption deductions
+        closing_balance = opening_balance - qty
+        execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
+    else:
+        closing_balance = opening_balance
 
-    # Insert movement record for BOTH Purchase and Sale/Consumption
-    # This ensures Sell Entry is Available In Inventory Movement Log
-    display_type = transaction_type
+    # Insert movement record
     execute_query('''INSERT INTO rm_stock_movement
     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-    (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
+    (transaction_date, challan_no, product, transaction_type, qty, opening_balance, closing_balance, reference_id))
 
-    # Recalculate Closing Stock in Master Table
+    # Recalculate and update master closing stock
     result = fetch_data("""
     SELECT COALESCE(opening_stock, 0) as opening_stock,
            COALESCE(total_purchased_qty, 0) as total_purchased,
@@ -340,8 +328,6 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
         purchased = result['total_purchased'].iloc[0]
         consumed = result['total_consumed'].iloc[0]
         calculated_closing = opening + purchased - consumed
-        
-        # Update the master table with the calculated closing stock
         execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (calculated_closing, product))
         
     if rate > 0:
@@ -2003,12 +1989,14 @@ elif page == "💰 Sales Entry":
                         # Note: We reverse the OLD transaction first, then apply the NEW one.
 
                         # Reverse Old Product Inventory
+                                        # Reverse Old Product Inventory
                         if old_prod_cat == 'RM Product':
-                            # If it was an RM sale, we add back the stock (reverse the sale)
-                            update_rm_inventory(old_product, old_qty, 'SALE_REVERSAL', old_date, old_challan, rate=old_rate) # Note: You might need to handle reversal logic in update_rm_inventory or just do direct SQL
-                            # Simpler approach: Direct SQL adjustment for reversal to avoid complex logic in helper
+                            # Direct SQL adjustment for reversal (Fixes NameError)
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                             execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (old_qty, old_product))
+                            
+                            # Clean up old movement record to keep history accurate
+                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
                         else:
                             # FG Sale Reversal
                             execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
@@ -2560,6 +2548,8 @@ elif page == "📈 Inventory":
             selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
             
             # QUERY: Get all movements for this product
+                    # UPDATED QUERY: Join with purchase/sales tables to get Party Name if available via reference_id or challan
+                    # UPDATED QUERY: Fetch Opening and Closing balances directly from the database
             query_movement = """
             SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, 
                    rsm.reference_id, rsm.opening_balance, rsm.closing_balance
@@ -2570,7 +2560,6 @@ elif page == "📈 Inventory":
             
             # If specific party selected, we need to join to find transactions associated with that party
             if rm_move_party != "All":
-                # We join with purchase_transactions for PURCHASE type and sales_transactions for SALE type
                 query_movement = """
                 SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, 
                        rsm.reference_id, rsm.opening_balance, rsm.closing_balance
