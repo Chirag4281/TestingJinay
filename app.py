@@ -295,33 +295,36 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     """
     Updates RM Inventory and Stock Movement records.
     Recalculates running balances for ALL movements of this product to ensure consistency after edits/deletes.
+    Uses a single connection to prevent 'database is locked' errors.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         # 1. Get Master Opening Stock
-        master_data = fetch_data("SELECT opening_stock FROM rm_inventory WHERE product_name = ?", (product,))
-        base_opening = master_data['opening_stock'].iloc[0] if not master_data.empty else 0
+        cursor.execute("SELECT opening_stock FROM rm_inventory WHERE product_name = ?", (product,))
+        row = cursor.fetchone()
+        base_opening = row[0] if row else 0
         
         # 2. Fetch ALL movements for this product ordered by date and ID
-        movements = fetch_data(
+        cursor.execute(
             "SELECT id, transaction_date, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", 
             (product,)
         )
+        movements = cursor.fetchall()
         
-        if movements.empty:
+        if not movements:
             # If no movements, just update master closing stock to opening
-            execute_query("UPDATE rm_inventory SET closing_stock = ?, rate = ? WHERE product_name = ?", (base_opening, rate if rate > 0 else None, product))
+            cursor.execute("UPDATE rm_inventory SET closing_stock = ?, rate = ? WHERE product_name = ?", 
+                           (base_opening, rate if rate > 0 else None, product))
+            conn.commit()
             return base_opening
 
         current_balance = base_opening
         movement_updates = []
         
         # 3. Recalculate balances for every movement in sequence
-        for _, mov in movements.iterrows():
-            mid = mov['id']
-            m_type = mov['transaction_type']
-            m_qty = mov['qty']
+        for mov in movements:
+            mid, m_date, m_type, m_qty = mov
             
             if m_type == 'PURCHASE':
                 current_balance += m_qty
@@ -337,9 +340,11 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
         # 5. Update Master Closing Stock and Rate
         final_closing = current_balance
         if rate > 0:
-            execute_query("UPDATE rm_inventory SET closing_stock = ?, rate = ? WHERE product_name = ?", (final_closing, rate, product))
+            cursor.execute("UPDATE rm_inventory SET closing_stock = ?, rate = ? WHERE product_name = ?", 
+                           (final_closing, rate, product))
         else:
-            execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (final_closing, product))
+            cursor.execute("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", 
+                           (final_closing, product))
             
         conn.commit()
         return final_closing
@@ -1308,6 +1313,7 @@ elif page == "🛒 Purchase Entry":
         submitted = st.form_submit_button("Save Purchase", type="primary")
         if submitted:
             if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
+                                # ... inside submitted block ...
                 try:
                     # CHECK UNIQUE CHALLAN NO
                     existing_challan = fetch_data("SELECT id FROM purchase_transactions WHERE challan_no = ?", (challan_no,))
@@ -1320,9 +1326,8 @@ elif page == "🛒 Purchase Entry":
                         (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, entry_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PURCHASE')''',
                         (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, purchase_amount))
+                        
                         # 2. Update Inventory Based on Category
-                                    # 2. Update Inventory Based on Category
-                                    # 2. Update Inventory Based on Category
                         if actual_prod_cat == 'RM Product':
                             # Ensure RM Inventory record exists
                             execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
@@ -1337,13 +1342,15 @@ elif page == "🛒 Purchase Entry":
                             execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
                             
                             # Recalculate Balances Realtime
+                            # THIS CALL IS NOW SAFE BECAUSE update_rm_inventory MANAGES ITS OWN CONNECTION
                             update_rm_inventory(product, 0, 'PURCHASE', purchase_date.strftime('%Y-%m-%d'), challan_no, purchase_id, rate=rate)
                             
                         elif actual_prod_cat in ['FG Product', 'Moulding Product', 'Powder']:
-                            # For FG/Moulding/Powder, add to FG Inventory as Purchased Stock
                             update_fg_inventory(product, qty, 'PURCHASE')
-                        # 3. Create Payable Entry (Since we are Buying, we owe money)
+                            
+                        # 3. Create Payable Entry
                         create_payable_entry(party, challan_no, purchase_date.strftime('%Y-%m-%d'), purchase_amount, payment_days)
+                        
                         st.success(f"✅ Purchase entry saved successfully! Amount: ₹{purchase_amount:,.2f}")
                         st.rerun()
                 except Exception as e:
