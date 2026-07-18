@@ -1365,6 +1365,7 @@ elif page == "🛒 Purchase Entry":
                                     if mov['transaction_type'] == 'PURCHASE':
                                         running_balance += mov['qty']
                                     elif mov['transaction_type'] == 'CONSUMPTION':
+                                        pass
                                     elif mov['transaction_type'] in ['SALE', 'CONSUMPTION']:
                                         running_balance -= mov['qty']
                                     
