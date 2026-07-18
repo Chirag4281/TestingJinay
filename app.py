@@ -2611,8 +2611,8 @@ elif page == "📈 Inventory":
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             rm_move_cat = st.selectbox("Select Party Category",
-            ["All", "Purchase Party", "Sales Party", "Contractor", "Moulder"],
-            key="rm_move_cat_filter")
+                                       ["All", "Purchase Party", "Sales Party", "Contractor", "Moulder"],
+                                       key="rm_move_cat_filter")
         with col_f2:
             # Helper to get parties
             def get_parties_by_category_inv(category):
@@ -2621,21 +2621,20 @@ elif page == "📈 Inventory":
                 else:
                     df = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (category,))
                 return ["All"] + (df['party_name'].tolist() if not df.empty else [])
-                
+        
             rm_move_parties = get_parties_by_category_inv(rm_move_cat)
             rm_move_party = st.selectbox("Select Party Name", rm_move_parties, key="rm_move_party_filter")
-    
+        
         # Fetch products that have movement records
         df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
+        
         if not df_products.empty:
             selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
             
             # QUERY: Get all movements for this product
-                    # UPDATED QUERY: Join with purchase/sales tables to get Party Name if available via reference_id or challan
-                    # UPDATED QUERY: Fetch Opening and Closing balances directly from the database
             query_movement = """
-            SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, 
-                   rsm.reference_id, rsm.opening_balance, rsm.closing_balance
+            SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty,
+            rsm.reference_id, rsm.opening_balance, rsm.closing_balance
             FROM rm_stock_movement rsm
             WHERE rsm.product_name = ? AND rsm.transaction_type IN ('PURCHASE', 'SALE')
             """
@@ -2644,8 +2643,8 @@ elif page == "📈 Inventory":
             # If specific party selected, we need to join to find transactions associated with that party
             if rm_move_party != "All":
                 query_movement = """
-                SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, 
-                       rsm.reference_id, rsm.opening_balance, rsm.closing_balance
+                SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty,
+                rsm.reference_id, rsm.opening_balance, rsm.closing_balance
                 FROM rm_stock_movement rsm
                 LEFT JOIN purchase_transactions pt ON rsm.reference_id = pt.id AND rsm.transaction_type = 'PURCHASE'
                 LEFT JOIN sales_transactions st ON rsm.reference_id = st.id AND rsm.transaction_type = 'SALE'
@@ -2658,7 +2657,7 @@ elif page == "📈 Inventory":
                 )
                 """
                 params_movement = [selected_product, rm_move_party, rm_move_party]
-                
+            
             query_movement += " ORDER BY rsm.transaction_date, rsm.id"
             df_movement = fetch_data(query_movement, tuple(params_movement))
             
@@ -2674,17 +2673,20 @@ elif page == "📈 Inventory":
                             p_name = res['party_name'].iloc[0]
                     elif row['transaction_type'] == 'SALE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM sales_transactions WHERE id = ?", (row['reference_id'],))
-                        if not res.empty: p_name = res['party_name'].iloc[0]
+                        if not res.empty: 
+                            p_name = res['party_name'].iloc[0]
                     
-                    # Fallback: If reference_id is missing or null, try matching Challan No (less reliable but helpful)
+                    # Fallback: If reference_id is missing or null, try matching Challan No
                     if p_name == "N/A" and pd.notna(row['challan_no']):
                         # Try finding in Purchase
                         res_p = fetch_data("SELECT party_name FROM purchase_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
-                        if not res_p.empty: p_name = res_p['party_name'].iloc[0]
+                        if not res_p.empty: 
+                            p_name = res_p['party_name'].iloc[0]
                         else:
                             # Try Sales
                             res_s = fetch_data("SELECT party_name FROM sales_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
-                            if not res_s.empty: p_name = res_s['party_name'].iloc[0]
+                            if not res_s.empty: 
+                                p_name = res_s['party_name'].iloc[0]
                     
                     party_names.append(p_name)
                 
@@ -2694,14 +2696,22 @@ elif page == "📈 Inventory":
                 df_display = df_movement[['transaction_date', 'challan_no', 'party_name', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
                 st.dataframe(df_display, use_container_width=True)
                 
-                col1, col2, col3 = st.columns(3)
+                # Calculate Metrics Safely
                 total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
                 total_sales = df_movement[df_movement['transaction_type']=='SALE']['qty'].sum()
-                final_balance = df_movement['closing_balance'].iloc[-1] if not df_movement.empty else 0
                 
+                # FIX: Ensure final_balance is a simple float
+                last_row_balance = df_movement['closing_balance'].iloc[-1]
+                try:
+                    final_balance = float(last_row_balance)
+                except (ValueError, TypeError):
+                    final_balance = 0.0
+                    
+                col1, col2, col3 = st.columns(3)
                 with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
                 with col2: st.metric("Total Sales (RM)", f"{total_sales:,.0f}")
                 with col3: st.metric("Current Balance", f"{final_balance:,.0f}")
+                
             else:
                 st.info("No Purchase or Sales movement records found for this product/filter.")
         else:
