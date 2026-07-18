@@ -1985,8 +1985,8 @@ elif page == "💰 Sales Entry":
                             st.balloons()
                             # Force immediate rerun to reflect changes in dashboard/ledger
                             st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
             else:
                 st.warning("Please fill all required fields")
     st.markdown("---")
