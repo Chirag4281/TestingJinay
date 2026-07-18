@@ -1581,7 +1581,6 @@ elif page == "🛒 Purchase Entry":
     st.dataframe(df_all_purchases, use_container_width=True)
     st.metric("Total Purchase Value", f"₹{df_all_purchases['amount'].sum():,.2f}")
 # ======================= PRODUCTION ENTRY =======================
-# ======================= PRODUCTION ENTRY =======================
 elif page == "🏭 Production Entry":
     st.subheader("🏭 Production Entry")
     
@@ -1672,6 +1671,7 @@ elif page == "🏭 Production Entry":
                         execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (fg_product,))
                         
                         # Add Movement Record for Production (Type: PURCHASE equivalent for RM)
+                        # We use 'PURCHASE' type for RM production so it adds to stock
                         prod_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
                         
                         execute_query('''INSERT INTO rm_stock_movement
