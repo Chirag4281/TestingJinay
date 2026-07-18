@@ -1787,7 +1787,7 @@ elif page == "💰 Sales Entry":
         else:
             st.metric("Total Amount", "₹0.00")
         # Inside elif page == "💰 Sales Entry": ... with st.form("sales_form"): ...
-        submitted = st.form_submit_button("Save Sale", type="primary")
+            submitted = st.form_submit_button("Save Sale", type="primary")
             if submitted:
                 if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
                     try:
