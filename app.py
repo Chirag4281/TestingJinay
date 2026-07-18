@@ -1322,6 +1322,7 @@ elif page == "🛒 Purchase Entry":
                         (challan_no, purchase_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, purchase_amount))
                         # 2. Update Inventory Based on Category
                                     # 2. Update Inventory Based on Category
+                                    # 2. Update Inventory Based on Category
                         if actual_prod_cat == 'RM Product':
                             # Ensure RM Inventory record exists
                             execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
@@ -1492,6 +1493,7 @@ elif page == "🛒 Purchase Entry":
                                     """, (edit_product,))
                         else:
                             # Product Changed: Revert Old, Add New
+                                            # --- REVERSE OLD ENTRY ---
                                             # --- REVERSE OLD ENTRY ---
                             if old_prod_cat == 'RM Product':
                                 execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
@@ -1877,6 +1879,7 @@ elif page == "💰 Sales Entry":
                             
                             # 2. Update Inventory
                                             # 2. Update Inventory
+                                            # 2. Update Inventory
                             try:
                                 if actual_prod_cat == 'RM Product':
                                     # Ensure RM Inventory record exists
@@ -1903,12 +1906,11 @@ elif page == "💰 Sales Entry":
                                     # For FG/Moulding/Powder, use FG Inventory logic
                                     update_fg_inventory(product, qty, 'SALE')
                                     
-                        # 3. Attempt RM Consumption (Non-Blocking)
-                                if actual_prod_cat != 'RM Product':
-                                    consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id)
-                                    
-                                # 3. Attempt RM Consumption (Non-Blocking)
-                                # If this fails or warns, it won't stop the sale because we already inserted the sale and updated FG inventory
+                                    # 3. Attempt RM Consumption (Non-Blocking)
+                                    if actual_prod_cat != 'RM Product':
+                                        consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id)                                    
+                                            # 3. Attempt RM Consumption (Non-Blocking)
+                                            # If this fails or warns, it won't stop the sale because we already inserted the sale and updated FG inventory
                                
                                     
                             except Exception as inv_err:
@@ -1962,6 +1964,7 @@ elif page == "💰 Sales Entry":
         
                         # 1. Update Inventory
                                         # 1. Update Inventory
+                                        # 1. Update Inventory
                         if prod_cat == 'RM Product':
                             # Reverse RM Sale: Delete movement record first
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (selected_id,))
@@ -1976,8 +1979,7 @@ elif page == "💰 Sales Entry":
                             UPDATE fg_inventory
                             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                             WHERE product_name = ?
-                            """, (product,))
-        
+                            """, (product,))        
                         # 2. Delete from Ledger
                         execute_query("""
                         DELETE FROM payable_receivable_ledger
@@ -2067,6 +2069,7 @@ elif page == "💰 Sales Entry":
                         
                         # --- REVERSE OLD ENTRY ---
                                         # --- REVERSE OLD ENTRY ---
+                                        # --- REVERSE OLD ENTRY ---
                         if old_prod_cat == 'RM Product':
                             # Reverse RM Sale
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
@@ -2102,7 +2105,7 @@ elif page == "💰 Sales Entry":
                             # FG Sale
                             execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                             update_fg_inventory(edit_product, edit_qty, 'SALE')    
-                                    # Handle RM Consumption if FG
+                                            # Handle RM Consumption if FG
                             if edit_product_category != 'RM Product':
                                 # Note: Full RM consumption reversal/re-application is complex. 
                                 # For simplicity in edit, we might skip auto-RM-consumption update or warn user.
