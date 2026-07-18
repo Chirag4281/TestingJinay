@@ -1840,7 +1840,8 @@ elif page == "💰 Sales Entry":
                     except Exception as e:
                         st.error(f"â    Error: {str(e)}")
                 else:
-                    st.warning("Please fill all required fields")    st.markdown("---")
+                    st.warning("Please fill all required fields")    
+    st.markdown("---")
     st.markdown("### 📝 Manage Sales Entries")
     df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date FROM sales_transactions ORDER BY date DESC")
     if not df_all_sales.empty:
