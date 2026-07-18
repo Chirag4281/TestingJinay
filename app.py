@@ -294,43 +294,31 @@ def calculate_rm_opening_balance(product_name, before_date=None):
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
     """
     Updates RM Inventory and Stock Movement records.
-    Recalculates running balances for all subsequent movements to ensure consistency.
+    Recalculates running balances for ALL movements of this product to ensure consistency after edits/deletes.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # 1. Get all movements for this product ordered by date and ID to establish a timeline
-        movements = fetch_data("SELECT id, transaction_date, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
-        
-        # 2. Calculate Opening Balance (Stock before the first recorded movement)
-        # Note: In this simple model, we assume Opening Stock in Master + Movements = Closing
-        # If you have a specific 'Opening Stock' date logic, it goes here. 
-        # For now, we calculate based on the Master's static opening stock if no movements exist, 
-        # or just run the sequence.
-        
+        # 1. Get Master Opening Stock
         master_data = fetch_data("SELECT opening_stock FROM rm_inventory WHERE product_name = ?", (product,))
         base_opening = master_data['opening_stock'].iloc[0] if not master_data.empty else 0
         
-        # We will rebuild the entire movement history to ensure closing_balance is always correct
-        # This handles edits/deletes automatically by recalculating from scratch.
+        # 2. Fetch ALL movements for this product ordered by date and ID
+        movements = fetch_data(
+            "SELECT id, transaction_date, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", 
+            (product,)
+        )
         
+        if movements.empty:
+            # If no movements, just update master closing stock to opening
+            execute_query("UPDATE rm_inventory SET closing_stock = ?, rate = ? WHERE product_name = ?", (base_opening, rate if rate > 0 else None, product))
+            return base_opening
+
         current_balance = base_opening
         movement_updates = []
         
-        # If we are adding a NEW transaction, we insert it temporarily into the list to calculate
-        # But since this function is called AFTER insertion usually, we fetch again including the new one.
-        # However, to be safe, let's fetch ALL including the one just added (if reference_id matches)
-        
-        all_movements = fetch_data("SELECT id, transaction_date, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
-        
-        if all_movements.empty:
-            # No movements, just update master
-            execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (base_opening, product))
-            if rate > 0:
-                execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
-            return base_opening
-
-        for _, mov in all_movements.iterrows():
+        # 3. Recalculate balances for every movement in sequence
+        for _, mov in movements.iterrows():
             mid = mov['id']
             m_type = mov['transaction_type']
             m_qty = mov['qty']
@@ -340,22 +328,21 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
             elif m_type in ['SALE', 'CONSUMPTION']:
                 current_balance -= m_qty
             
-            # Store update for batch execution
             movement_updates.append((current_balance, mid))
 
-        # Batch update all closing balances
+        # 4. Batch update all closing balances in the movement table
         for bal, mid in movement_updates:
             cursor.execute("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (bal, mid))
         
-        # Update Master Closing Stock
-        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (current_balance, product))
-        
-        # Update Rate if provided
+        # 5. Update Master Closing Stock and Rate
+        final_closing = current_balance
         if rate > 0:
-            execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
+            execute_query("UPDATE rm_inventory SET closing_stock = ?, rate = ? WHERE product_name = ?", (final_closing, rate, product))
+        else:
+            execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (final_closing, product))
             
         conn.commit()
-        return current_balance
+        return final_closing
 
     except Exception as e:
         conn.rollback()
