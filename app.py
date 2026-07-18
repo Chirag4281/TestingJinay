@@ -298,7 +298,6 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'SALE':
     elif transaction_type == 'SALE': 
         if opening_balance < qty:
             raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
