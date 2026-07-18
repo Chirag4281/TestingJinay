@@ -1589,7 +1589,7 @@ elif page == "🏭 Production Entry":
     if 'prod_party_filter' not in st.session_state:
         st.session_state.prod_party_filter = "Moulder"
     if 'prod_prod_filter' not in st.session_state:
-        st.session_state.prod_prod_filter = "All" # Changed default to All to show everything
+        st.session_state.prod_prod_filter = "All" # Default to All to see RM/FG
 
     unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
     
@@ -1609,7 +1609,7 @@ elif page == "🏭 Production Entry":
     with col_f2:
         prod_cat_filter = st.selectbox(
             "Filter Product By Category",
-            ["All", "FG Product", "Moulding Product", "RM Product", "Powder"], # Added All and RM/Powder
+            ["All", "FG Product", "Moulding Product", "RM Product", "Powder"],
             key="prod_prod_filter_select",
             index=["All", "FG Product", "Moulding Product", "RM Product", "Powder"].index(st.session_state.prod_prod_filter) if st.session_state.prod_prod_filter in ["All", "FG Product", "Moulding Product", "RM Product", "Powder"] else 0
         )
@@ -1672,9 +1672,6 @@ elif page == "🏭 Production Entry":
                         execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (fg_product,))
                         
                         # Add Movement Record for Production (Type: PURCHASE equivalent for RM)
-                        # We use 'PURCHASE' type for RM production so it adds to stock, 
-                        # or you can create a new type 'PRODUCTION' if you prefer distinct tracking.
-                        # For now, let's treat RM Production as an addition to stock similar to Purchase.
                         prod_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
                         
                         execute_query('''INSERT INTO rm_stock_movement
@@ -1715,14 +1712,19 @@ elif page == "🏭 Production Entry":
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✏️ Edit Selected Production", type="primary", key="edit_production_btn"):
-                st.session_state.edit_mode = True
-                st.session_state.edit_id = selected_id
-                st.session_state.edit_table = 'production'
-                st.rerun()
+                if selected_id:
+                    st.session_state.edit_mode = True
+                    st.session_state.edit_id = selected_id
+                    st.session_state.edit_table = 'production'
+                    st.rerun()
+                else:
+                    st.warning("Please select a production entry first.")
                 
         with col2:
             if st.button("🗑️ Delete Selected Production", key="delete_production_btn"):
-                if st.session_state.get('confirm_delete_production'):
+                if not selected_id:
+                    st.warning("Please select a production entry to delete.")
+                elif st.session_state.get('confirm_delete_production') == selected_id:
                     record = fetch_data("SELECT * FROM production_register WHERE id = ?", (selected_id,))
                     if not record.empty:
                         product = record['fg_product'].iloc[0]
@@ -1748,14 +1750,14 @@ elif page == "🏭 Production Entry":
                             
                         execute_query("DELETE FROM production_register WHERE id = ?", (selected_id,))
                         st.success("✅ Production entry deleted and inventory updated!")
-                        st.session_state['confirm_delete_production'] = False
+                        st.session_state['confirm_delete_production'] = None
                         st.rerun()
                 else:
-                    st.session_state['confirm_delete_production'] = True
-                    st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
+                    # First click: Set confirmation state tied to this specific ID
+                    st.session_state['confirm_delete_production'] = selected_id
+                    st.warning(f"⚠️ Are you sure? Click 'Delete' again to confirm. This will reverse inventory changes for ID: {selected_id}.")
 
     # Edit Mode Logic for Production
-        # Edit Mode Logic for Production
     if st.session_state.edit_mode and st.session_state.edit_table == 'production':
         st.markdown("### ✏️ Edit Production Entry")
         production_data = fetch_data("SELECT * FROM production_register WHERE id = ?", (st.session_state.edit_id,))
@@ -1790,8 +1792,6 @@ elif page == "🏭 Production Entry":
                     
                     # Determine category for the edited product
                     edit_prod_cat = row['product_category']
-                    # If product changed, we might need to re-evaluate, but for simplicity keep original category logic or fetch new
-                    # For now, let's assume category stays same or user selects from same list
                     
                     edit_qty = st.number_input("Produced Qty *", min_value=0.0, value=float(row['produced_qty']), step=1.0, key="edit_prod_qty")
                     edit_unit = st.selectbox("Unit", unit_options,
@@ -1847,12 +1847,6 @@ elif page == "🏭 Production Entry":
                                 """, (old_product,))
                                 
                             # Add New
-                            if old_prod_cat == 'RM Product': # Note: This assumes new product is same category. If changing category, logic needs to be more complex.
-                                 # For simplicity, assuming category doesn't change in edit for now, or handling basic swap
-                                 pass 
-                            # Ideally, if category changes, we delete old and insert new as per Create logic. 
-                            # But for Edit, usually we keep category consistent. 
-                            # Let's force recalc for new product if it's RM
                             if old_prod_cat == 'RM Product':
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
                                 execute_query('''INSERT INTO rm_stock_movement
@@ -1880,6 +1874,7 @@ elif page == "🏭 Production Entry":
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
                         st.rerun()
+
     st.markdown("### All Production Entries")
     if not df_all_production.empty:
         st.dataframe(df_all_production, use_container_width=True)
