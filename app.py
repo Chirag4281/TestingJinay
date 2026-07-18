@@ -2573,12 +2573,6 @@ elif page == "📈 Inventory":
             # Real-time correction of closing stock based on formula
             df_rm_inv['calculated_closing'] = df_rm_inv['opening_stock'] + df_rm_inv['total_purchased_qty'] - df_rm_inv['total_consumed_qty']
             
-            # Optional: Auto-fix discrepancies in DB if needed (uncomment if you want auto-healing)
-            # for index, row in df_rm_inv.iterrows():
-            #     if abs(row['closing_stock'] - row['calculated_closing']) > 0.01:
-            #         execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (row['calculated_closing'], row['product_name']))
-            #         df_rm_inv.at[index, 'closing_stock'] = row['calculated_closing']
-    
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total RM Products", len(df_rm_inv))
             with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
@@ -2601,14 +2595,9 @@ elif page == "📈 Inventory":
             if st.button("Update Opening Stock", type="primary", key="update_rm_opening"):
                 if rm_product:
                     execute_query("UPDATE rm_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, rm_product))
-                    # Trigger recalculation of closing stock via movement history or direct formula
-                    # Using direct formula for immediate visual update, but ideally re-run movement calc
-                    current_purchased = fetch_data("SELECT COALESCE(total_purchased_qty, 0) FROM rm_inventory WHERE product_name = ?", (rm_product,)).iloc[0,0]
-                    current_consumed = fetch_data("SELECT COALESCE(total_consumed_qty, 0) FROM rm_inventory WHERE product_name = ?", (rm_product,)).iloc[0,0]
-                    new_closing = new_opening + current_purchased - current_consumed
-                    execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (new_closing, rm_product))
+                    # Trigger recalculation of closing stock via movement history
+                    update_rm_inventory(rm_product, 0, 'PURCHASE') # Passing 0 qty triggers full recalc
                     
-                    # Also update the first movement's opening balance if exists, or just rely on the master update
                     st.success("✅ Opening stock updated!")
                     st.rerun()
         else:
