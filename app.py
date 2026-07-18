@@ -1504,24 +1504,16 @@ elif page == "🛒 Purchase Entry":
                         WHERE id=?''',
                         (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, edit_qty*edit_rate, st.session_state.edit_id))
                         # Update Inventory Logic
+                                        # Update Inventory Logic
                         if old_product == edit_product and old_prod_cat == edit_product_category:
                             if qty_diff != 0:
                                 if old_prod_cat == 'RM Product':
                                     execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                    execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                    # Update Movement Record
-                                    execute_query("UPDATE rm_stock_movement SET qty = ?, closing_balance = closing_balance + ? WHERE reference_id = ? AND transaction_type = 'PURCHASE'",
-                                    (edit_qty, qty_diff, st.session_state.edit_id))
-                                    # Recalculate subsequent balances
-                                    movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? AND transaction_date >= ? ORDER BY transaction_date, id", (edit_product, old_date))
-                                    if not movements.empty:
-                                        running_balance = calculate_rm_opening_balance(edit_product, movements['transaction_date'].iloc[0])
-                                        for _, mov in movements.iterrows():
-                                            if mov['transaction_type'] == 'PURCHASE':
-                                                running_balance += mov['qty']
-                                            elif mov['transaction_type'] == 'CONSUMPTION':
-                                                running_balance -= mov['qty']
-                                            execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
+                                    # Update Movement Record Qty
+                                    execute_query("UPDATE rm_stock_movement SET qty = ? WHERE reference_id = ? AND transaction_type = 'PURCHASE'",
+                                                  (edit_qty, st.session_state.edit_id))
+                                    # Recalculate Balances Realtime (This updates closing_balance for all rows)
+                                    update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate)
                                 else:
                                     execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                     execute_query("""
@@ -1531,8 +1523,7 @@ elif page == "🛒 Purchase Entry":
                                     """, (edit_product,))
                         else:
                             # Product Changed: Revert Old, Add New
-                                            # --- REVERSE OLD ENTRY ---
-                                            # --- REVERSE OLD ENTRY ---
+                            # --- REVERSE OLD ENTRY ---
                             if old_prod_cat == 'RM Product':
                                 execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
                                 execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
@@ -1545,7 +1536,7 @@ elif page == "🛒 Purchase Entry":
                                 SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                 WHERE product_name = ?
                                 """, (old_product,))
-            
+        
                             # --- APPLY NEW ENTRY ---
                             if edit_product_category == 'RM Product':
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
