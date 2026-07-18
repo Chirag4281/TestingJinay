@@ -294,46 +294,59 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     return result['balance'].iloc[0] if not result.empty else 0
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
+    # Calculate opening balance up to the day before this transaction
     opening_balance = calculate_rm_opening_balance(product, transaction_date)
-
-    # Logic: Only Purchase adds stock. Sale removes stock.
+    
+    closing_balance = opening_balance
+    
+    # Logic: Purchase adds stock. Sale/Consumption removes stock.
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'SALE': # If RM is sold directly
-        # CHECK FOR NEGATIVE STOCK
+        
+    elif transaction_type in ['SALE', 'CONSUMPTION']: 
+        # Check for negative stock only if it's a direct sale or consumption
         if opening_balance < qty:
-            raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
-
+            # Allow negative stock but warn? Or block? 
+            # Per previous request, we allow sales even if insufficient, but let's track it.
+            pass 
+            
         closing_balance = opening_balance - qty
-        execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    else:
-        closing_balance = opening_balance
+        
+        if transaction_type == 'SALE':
+             # If sold directly, update consumed/sold tracker if needed, or just rely on movement
+             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
+        elif transaction_type == 'CONSUMPTION':
+             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
 
-    # Insert movement record.
+    # Insert movement record for BOTH Purchase and Sale/Consumption
+    # This ensures Sell Entry is Available In Inventory Movement Log
     display_type = transaction_type
     execute_query('''INSERT INTO rm_stock_movement
     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
     (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
 
+    # Recalculate Closing Stock in Master Table
     result = fetch_data("""
     SELECT COALESCE(opening_stock, 0) as opening_stock,
-    COALESCE(total_purchased_qty, 0) as total_purchased,
-    COALESCE(total_consumed_qty, 0) as total_consumed
+           COALESCE(total_purchased_qty, 0) as total_purchased,
+           COALESCE(total_consumed_qty, 0) as total_consumed
     FROM rm_inventory WHERE product_name = ?
     """, (product,))
-
+    
     if not result.empty:
         opening = result['opening_stock'].iloc[0]
         purchased = result['total_purchased'].iloc[0]
-        consumed = result['total_consumed'].iloc[0] 
-        closing_stock = opening + purchased - consumed
-        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (closing_stock, product))
-
+        consumed = result['total_consumed'].iloc[0]
+        calculated_closing = opening + purchased - consumed
+        
+        # Update the master table with the calculated closing stock
+        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (calculated_closing, product))
+        
     if rate > 0:
         execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
-
+        
     return closing_balance
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
@@ -2520,41 +2533,51 @@ elif page == "📈 Inventory":
 
     with tab2:
         st.markdown("### RM Stock Movement (Detailed)")
-        st.info("This shows only manual Purchase and Sales entries added by you.")
-
-        # --- NEW FILTERS FOR RM MOVEMENT ---
+        st.info("This shows Purchase and Direct Sales entries for Raw Materials.")
+        
+        # --- FILTERS ---
         st.markdown("#### 🔍 Filter Movements")
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            rm_move_cat = st.selectbox("Select Party Category", 
-                                       ["All", "Purchase Party", "Sales Party", "Contractor", "Moulder"], 
-                                       key="rm_move_cat_filter")
+            rm_move_cat = st.selectbox("Select Party Category",
+            ["All", "Purchase Party", "Sales Party", "Contractor", "Moulder"],
+            key="rm_move_cat_filter")
         with col_f2:
-            rm_move_parties = get_parties_by_category(rm_move_cat)
+            # Helper to get parties
+            def get_parties_by_category_inv(category):
+                if category == "All":
+                    df = fetch_data("SELECT party_name FROM party_master ORDER BY party_name")
+                else:
+                    df = fetch_data("SELECT party_name FROM party_master WHERE category = ? ORDER BY party_name", (category,))
+                return ["All"] + (df['party_name'].tolist() if not df.empty else [])
+                
+            rm_move_parties = get_parties_by_category_inv(rm_move_cat)
             rm_move_party = st.selectbox("Select Party Name", rm_move_parties, key="rm_move_party_filter")
-
+    
         # Fetch products that have movement records
         df_products = fetch_data("SELECT DISTINCT product_name FROM rm_stock_movement ORDER BY product_name")
         if not df_products.empty:
             selected_product = st.selectbox("Select Product to View Movement", df_products['product_name'].tolist(), key="rm_movement_product")
-
-            # UPDATED QUERY: Join with purchase/sales tables to get Party Name if available via reference_id or challan
+            
+            # QUERY: Get all movements for this product
             query_movement = """
-            SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, rsm.reference_id
+            SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, 
+                   rsm.reference_id, rsm.opening_balance, rsm.closing_balance
             FROM rm_stock_movement rsm
             WHERE rsm.product_name = ? AND rsm.transaction_type IN ('PURCHASE', 'SALE')
             """
             params_movement = [selected_product]
-
+            
             # If specific party selected, we need to join to find transactions associated with that party
             if rm_move_party != "All":
                 # We join with purchase_transactions for PURCHASE type and sales_transactions for SALE type
                 query_movement = """
-                SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, rsm.reference_id
+                SELECT rsm.id, rsm.transaction_date, rsm.challan_no, rsm.transaction_type, rsm.qty, 
+                       rsm.reference_id, rsm.opening_balance, rsm.closing_balance
                 FROM rm_stock_movement rsm
                 LEFT JOIN purchase_transactions pt ON rsm.reference_id = pt.id AND rsm.transaction_type = 'PURCHASE'
                 LEFT JOIN sales_transactions st ON rsm.reference_id = st.id AND rsm.transaction_type = 'SALE'
-                WHERE rsm.product_name = ? 
+                WHERE rsm.product_name = ?
                 AND rsm.transaction_type IN ('PURCHASE', 'SALE')
                 AND (
                     (rsm.transaction_type = 'PURCHASE' AND pt.party_name = ?)
@@ -2563,11 +2586,10 @@ elif page == "📈 Inventory":
                 )
                 """
                 params_movement = [selected_product, rm_move_party, rm_move_party]
-
+                
             query_movement += " ORDER BY rsm.transaction_date, rsm.id"
-
             df_movement = fetch_data(query_movement, tuple(params_movement))
-
+            
             if not df_movement.empty:
                 # Enrich dataframe with Party Name for display (Real-time fetch)
                 party_names = []
@@ -2576,51 +2598,35 @@ elif page == "📈 Inventory":
                     # Fetch from Transaction Table using Reference ID to get the most up-to-date Party Name linkage
                     if row['transaction_type'] == 'PURCHASE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM purchase_transactions WHERE id = ?", (row['reference_id'],))
-                        if not res.empty: 
+                        if not res.empty:
                             p_name = res['party_name'].iloc[0]
                     elif row['transaction_type'] == 'SALE' and pd.notna(row['reference_id']):
                         res = fetch_data("SELECT party_name FROM sales_transactions WHERE id = ?", (row['reference_id'],))
                         if not res.empty: p_name = res['party_name'].iloc[0]
-
+                    
                     # Fallback: If reference_id is missing or null, try matching Challan No (less reliable but helpful)
                     if p_name == "N/A" and pd.notna(row['challan_no']):
-                         # Try finding in Purchase
-                         res_p = fetch_data("SELECT party_name FROM purchase_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
-                         if not res_p.empty: p_name = res_p['party_name'].iloc[0]
-                         else:
-                             # Try Sales
-                             res_s = fetch_data("SELECT party_name FROM sales_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
-                             if not res_s.empty: p_name = res_s['party_name'].iloc[0]
-
+                        # Try finding in Purchase
+                        res_p = fetch_data("SELECT party_name FROM purchase_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
+                        if not res_p.empty: p_name = res_p['party_name'].iloc[0]
+                        else:
+                            # Try Sales
+                            res_s = fetch_data("SELECT party_name FROM sales_transactions WHERE challan_no = ? LIMIT 1", (row['challan_no'],))
+                            if not res_s.empty: p_name = res_s['party_name'].iloc[0]
+                    
                     party_names.append(p_name)
-
+                
                 df_movement['party_name'] = party_names
-
-                opening_result = fetch_data("SELECT COALESCE(opening_stock, 0) as opening_stock FROM rm_inventory WHERE product_name = ?", (selected_product,))
-                opening_stock = opening_result['opening_stock'].iloc[0] if not opening_result.empty else 0
-                running_balance = opening_stock
-                opening_balances = []
-                closing_balances = []
-
-                for idx, row in df_movement.iterrows():
-                    opening_balances.append(running_balance)
-                    if row['transaction_type'] == 'PURCHASE':
-                        running_balance += row['qty']
-                    elif row['transaction_type'] == 'SALE':
-                        running_balance -= row['qty']
-                    closing_balances.append(running_balance)
-
-                df_movement['opening_balance'] = opening_balances
-                df_movement['closing_balance'] = closing_balances
-
+                
                 # Display the dataframe with Party Name
                 df_display = df_movement[['transaction_date', 'challan_no', 'party_name', 'transaction_type', 'qty', 'opening_balance', 'closing_balance']]
                 st.dataframe(df_display, use_container_width=True)
-
+                
                 col1, col2, col3 = st.columns(3)
                 total_purchases = df_movement[df_movement['transaction_type']=='PURCHASE']['qty'].sum()
                 total_sales = df_movement[df_movement['transaction_type']=='SALE']['qty'].sum()
-                final_balance = closing_balances[-1] if closing_balances else 0
+                final_balance = df_movement['closing_balance'].iloc[-1] if not df_movement.empty else 0
+                
                 with col1: st.metric("Total Purchases", f"{total_purchases:,.0f}")
                 with col2: st.metric("Total Sales (RM)", f"{total_sales:,.0f}")
                 with col3: st.metric("Current Balance", f"{final_balance:,.0f}")
@@ -2628,7 +2634,6 @@ elif page == "📈 Inventory":
                 st.info("No Purchase or Sales movement records found for this product/filter.")
         else:
             st.info("No RM stock movement data available")
-
     with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
         # UPDATED QUERY: Join with sales_transactions to show last sold to / contractor if applicable
