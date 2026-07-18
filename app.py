@@ -339,7 +339,7 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
     (transaction_date, challan_no, product, display_type, qty, opening_balance, closing_balance, reference_id))
-    (transaction_date, challan_no, product, transaction_type, qty, opening_balance, closing_balance, reference_id))
+    (transaction_date, challan_no, product, transaction_type, qty, opening_balance, closing_balance, reference_id)
 
     # Recalculate Closing Stock in Master Table
     # Recalculate and update master closing stock
