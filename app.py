@@ -1960,9 +1960,7 @@ elif page == "💰 Sales Entry":
                 else:
                     st.session_state['confirm_delete_sale'] = True
                     st.warning("⚠️ Click again to confirm deletion. This will reverse inventory and ledger changes.")
-                    else:
-                        st.session_state['confirm_delete_sale'] = True
-                        st.warning("⚠️ Click again to confirm deletion. This will reverse inventory and ledger changes.")
+           
     if st.session_state.edit_mode and st.session_state.edit_table == 'sale':
         st.markdown("### ✏️ Edit Sales Entry")
         sales_data = fetch_data("SELECT * FROM sales_transactions WHERE id = ?", (st.session_state.edit_id,))
