@@ -1917,6 +1917,7 @@ elif page == "💰 Sales Entry":
                                             # 2. Update Inventory
                                             # 2. Update Inventory
                                             # 2. Update Inventory
+                                            # 2. Update Inventory
                             try:
                                 if actual_prod_cat == 'RM Product':
                                     # Ensure RM Inventory record exists
@@ -1936,11 +1937,12 @@ elif page == "💰 Sales Entry":
                                     # Update Master Totals
                                     execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
                                     
-                                    # Recalculate Balances Realtime (Same as Purchase)
+                                    # Recalculate Balances Realtime
                                     update_rm_inventory(product, 0, 'PURCHASE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
             
                                 else:
-                                    # For FG/Moulding/Powder, use FG Inventory logic
+                                    # For FG/Moulding/Powder (Produced Products), use FG Inventory logic
+                                    # This will correctly check Opening + Produced + Purchased - Sold
                                     update_fg_inventory(product, qty, 'SALE')
                                     
                                     # 3. Attempt RM Consumption (Non-Blocking)
@@ -2796,9 +2798,18 @@ elif page == "📈 Inventory":
             st.info("No RM stock movement data available")
     with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
-        # UPDATED QUERY: Join with product_master to get real-time Category
+        # UPDATED QUERY: Join with product_master to get real-time Category and Details
         df_fg_inv = fetch_data("""
-        SELECT i.product_name, COALESCE(m.category, 'FG Product') as category, i.opening_stock, i.produced_qty, i.purchased_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
+        SELECT i.product_name, 
+               COALESCE(m.category, 'FG Product') as category, 
+               i.opening_stock, 
+               i.produced_qty, 
+               i.purchased_qty, 
+               i.sold_qty, 
+               i.rejected_qty, 
+               i.closing_stock, 
+               m.rate, 
+               m.unit
         FROM fg_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name
         WHERE m.category IN ('FG Product', 'Moulding Product', 'Powder') OR m.category IS NULL
         ORDER BY i.product_name
@@ -2851,7 +2862,6 @@ elif page == "📈 Inventory":
                     st.rerun()
         else:
             st.info("No FG inventory data available")
-
     with tab4:
         st.markdown("### 🧮 FG to RM Material Requirement Calculator")
         st.markdown("---")
