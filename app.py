@@ -1788,63 +1788,59 @@ elif page == "💰 Sales Entry":
             st.metric("Total Amount", "₹0.00")
         # Inside elif page == "💰 Sales Entry": ... with st.form("sales_form"): ...
         submitted = st.form_submit_button("Save Sale", type="primary")
-        if submitted:
-            if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
-                try:
-                    # CHECK UNIQUE CHALLAN NO
-                    existing_challan = fetch_data("SELECT id FROM sales_transactions WHERE challan_no = ?", (challan_no,))
-                    if not existing_challan.empty:
-                        st.error(f"❌ Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
-                    else:
-                        available = 0.0
-                        # Determine correct inventory table based on product category
-                        if actual_prod_cat == 'RM Product':
-                            df_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
-                            if not df_stock.empty:
-                                val = df_stock['closing_stock'].iloc[0]
-                                available = float(val) if pd.notna(val) else 0.0
+                    if submitted:
+                if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
+                    try:
+                        # CHECK UNIQUE CHALLAN NO
+                        existing_challan = fetch_data("SELECT id FROM sales_transactions WHERE challan_no = ?", (challan_no,))
+                        if not existing_challan.empty:
+                            st.error(f"â    Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
                         else:
-                            # For FG, Moulding, Powder, use FG Inventory
-                            df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
-                            if not df_stock.empty:
-                                val = df_stock['closing_stock'].iloc[0]
-                                available = float(val) if pd.notna(val) else 0.0
-
-                        if available < qty:
-                            st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
-                        else:
-                            sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
-                            due_date = sale_date_dt + timedelta(days=payment_days)
-                            sale_amount = qty * rate
-
-                            # 1. Insert Sales Transaction
-                            execute_query('''INSERT INTO sales_transactions
-                            (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                            (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
-
-                            # Get the ID of the newly inserted sale for reference
-                            new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
-
-                            # 2. Update Inventory
+                            # --- STRICT STOCK CHECK ---
+                            current_stock = 0.0
                             if actual_prod_cat == 'RM Product':
-                                update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
+                                df_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
+                                if not df_stock.empty and pd.notna(df_stock['closing_stock'].iloc[0]):
+                                    current_stock = float(df_stock['closing_stock'].iloc[0])
                             else:
-                                # Use the updated update_fg_inventory function
-                                update_fg_inventory(product, qty, 'SALE')
-
-                            # 3. Create Receivable Entry
-                            create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
-
-                            st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
-                            st.balloons()
-                            # Force immediate rerun to reflect changes in dashboard/ledger
-                            st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
-            else:
-                st.warning("Please fill all required fields")
-    st.markdown("---")
+                                # For FG, Moulding, Powder
+                                df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
+                                if not df_stock.empty and pd.notna(df_stock['closing_stock'].iloc[0]):
+                                    current_stock = float(df_stock['closing_stock'].iloc[0])
+                            
+                            if current_stock < qty:
+                                st.error(f"â   ï¸   **Transaction Blocked:** Insufficient Stock!\nAvailable: {current_stock:.2f} {unit}\nRequested: {qty:.2f} {unit}")
+                            else:
+                                sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
+                                due_date = sale_date_dt + timedelta(days=payment_days)
+                                sale_amount = qty * rate
+                                
+                                # 1. Insert Sales Transaction
+                                execute_query('''INSERT INTO sales_transactions
+                                (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
+                                
+                                # Get the ID of the newly inserted sale for reference
+                                new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
+                                
+                                # 2. Update Inventory (This will now raise an exception if stock is insufficient inside the helper)
+                                if actual_prod_cat == 'RM Product':
+                                    update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
+                                else:
+                                    update_fg_inventory(product, qty, 'SALE')
+                                    
+                                # 3. Create Receivable Entry
+                                create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
+                                
+                                st.success(f"â    Sale entry saved successfully! Amount: â  ¹{sale_amount:,.2f}")
+                                st.balloons()
+                                # Force immediate rerun to reflect changes in dashboard/ledger
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"â    Error: {str(e)}")
+                else:
+                    st.warning("Please fill all required fields")    st.markdown("---")
     st.markdown("### 📝 Manage Sales Entries")
     df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date FROM sales_transactions ORDER BY date DESC")
     if not df_all_sales.empty:
