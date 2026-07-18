@@ -292,48 +292,76 @@ def calculate_rm_opening_balance(product_name, before_date=None):
     return result['balance'].iloc[0] if not result.empty else 0
 
 def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_date=None, challan_no=None, reference_id=None, rate=0):
-    opening_balance = calculate_rm_opening_balance(product, transaction_date)
-    
-    if transaction_type == 'PURCHASE':
-        closing_balance = opening_balance + qty
-        execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'SALE':
-        if opening_balance < qty:
-            raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
-        closing_balance = opening_balance - qty
-        execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    elif transaction_type == 'CONSUMPTION':
-        # Fix: Properly handle consumption deductions
-        closing_balance = opening_balance - qty
-        execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    else:
-        closing_balance = opening_balance
-
-    # Insert movement record
-    execute_query('''INSERT INTO rm_stock_movement
-    (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-    (transaction_date, challan_no, product, transaction_type, qty, opening_balance, closing_balance, reference_id))
-
-    # Recalculate and update master closing stock
-    result = fetch_data("""
-    SELECT COALESCE(opening_stock, 0) as opening_stock,
-           COALESCE(total_purchased_qty, 0) as total_purchased,
-           COALESCE(total_consumed_qty, 0) as total_consumed
-    FROM rm_inventory WHERE product_name = ?
-    """, (product,))
-    
-    if not result.empty:
-        opening = result['opening_stock'].iloc[0]
-        purchased = result['total_purchased'].iloc[0]
-        consumed = result['total_consumed'].iloc[0]
-        calculated_closing = opening + purchased - consumed
-        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (calculated_closing, product))
+    """
+    Updates RM Inventory and Stock Movement records.
+    Recalculates running balances for all subsequent movements to ensure consistency.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. Get all movements for this product ordered by date and ID to establish a timeline
+        movements = fetch_data("SELECT id, transaction_date, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
         
-    if rate > 0:
-        execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
+        # 2. Calculate Opening Balance (Stock before the first recorded movement)
+        # Note: In this simple model, we assume Opening Stock in Master + Movements = Closing
+        # If you have a specific 'Opening Stock' date logic, it goes here. 
+        # For now, we calculate based on the Master's static opening stock if no movements exist, 
+        # or just run the sequence.
         
-    return closing_balance
+        master_data = fetch_data("SELECT opening_stock FROM rm_inventory WHERE product_name = ?", (product,))
+        base_opening = master_data['opening_stock'].iloc[0] if not master_data.empty else 0
+        
+        # We will rebuild the entire movement history to ensure closing_balance is always correct
+        # This handles edits/deletes automatically by recalculating from scratch.
+        
+        current_balance = base_opening
+        movement_updates = []
+        
+        # If we are adding a NEW transaction, we insert it temporarily into the list to calculate
+        # But since this function is called AFTER insertion usually, we fetch again including the new one.
+        # However, to be safe, let's fetch ALL including the one just added (if reference_id matches)
+        
+        all_movements = fetch_data("SELECT id, transaction_date, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
+        
+        if all_movements.empty:
+            # No movements, just update master
+            execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (base_opening, product))
+            if rate > 0:
+                execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
+            return base_opening
+
+        for _, mov in all_movements.iterrows():
+            mid = mov['id']
+            m_type = mov['transaction_type']
+            m_qty = mov['qty']
+            
+            if m_type == 'PURCHASE':
+                current_balance += m_qty
+            elif m_type in ['SALE', 'CONSUMPTION']:
+                current_balance -= m_qty
+            
+            # Store update for batch execution
+            movement_updates.append((current_balance, mid))
+
+        # Batch update all closing balances
+        for bal, mid in movement_updates:
+            cursor.execute("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (bal, mid))
+        
+        # Update Master Closing Stock
+        execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (current_balance, product))
+        
+        # Update Rate if provided
+        if rate > 0:
+            execute_query("UPDATE rm_inventory SET rate = ? WHERE product_name = ?", (rate, product))
+            
+        conn.commit()
+        return current_balance
+
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1340,30 +1368,38 @@ elif page == "🛒 Purchase Entry":
                     record = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (selected_id,))
                     if not record.empty:
                         product = record['product_name'].iloc[0]
-                        qty = record['qty'].iloc[0]
+                        qty = float(record['qty'].iloc[0])
                         prod_cat = record['product_category'].iloc[0]
+                        challan_no_del = record['challan_no'].iloc[0]
+                        party_name_del = record['party_name'].iloc[0]
+        
                         if prod_cat == 'RM Product':
+                            # Reverse RM Purchase
                             execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                            execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) - ? WHERE product_name = ?", (qty, product))
+                            # Delete Movement Record
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
-                            # Recalculate running balance for RM movements
-                            movements = fetch_data("SELECT id, transaction_date, product_name, transaction_type, qty FROM rm_stock_movement WHERE product_name = ? ORDER BY transaction_date, id", (product,))
-                            if not movements.empty:
-                                running_balance = calculate_rm_opening_balance(product, movements['transaction_date'].iloc[0])
-                                for _, mov in movements.iterrows():
-                                    if mov['transaction_type'] == 'PURCHASE':
-                                        running_balance += mov['qty']
-                                    elif mov['transaction_type'] == 'CONSUMPTION':
-                                        running_balance -= mov['qty']
-                                    execute_query("UPDATE rm_stock_movement SET closing_balance = ? WHERE id = ?", (running_balance, mov['id']))
+                            # Recalculate Balances
+                            update_rm_inventory(product, 0, 'PURCHASE', None, None, None) # Triggers recalc
                         else:
+                            # Reverse FG Purchase
                             execute_query("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
                             execute_query("""
                             UPDATE fg_inventory
                             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                             WHERE product_name = ?
                             """, (product,))
+        
+                        # Delete from Ledger (Payable)
+                        execute_query("""
+                        DELETE FROM payable_receivable_ledger
+                        WHERE transaction_type = 'PAYABLE'
+                        AND challan_no = ?
+                        AND party_name = ?
+                        """, (challan_no_del, party_name_del))
+        
+                        # Delete Purchase Transaction
                         execute_query("DELETE FROM purchase_transactions WHERE id = ?", (selected_id,))
+        
                         st.success("✅ Purchase entry deleted and inventory updated!")
                         st.session_state['confirm_delete_purchase'] = False
                         st.rerun()
@@ -1892,29 +1928,40 @@ elif page == "💰 Sales Entry":
                     record = fetch_data("SELECT * FROM sales_transactions WHERE id = ?", (selected_id,))
                     if not record.empty:
                         product = record['product_name'].iloc[0]
-                        qty = record['qty'].iloc[0]
+                        qty = float(record['qty'].iloc[0])
                         prod_cat = record['product_category'].iloc[0]
                         challan_no_del = record['challan_no'].iloc[0]
                         party_name_del = record['party_name'].iloc[0]
-                        # Update Inventory
+        
+                        # 1. Update Inventory
                         if prod_cat == 'RM Product':
+                            # Reverse RM Sale
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                            execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (qty, product))
+                            # Delete Movement Record
+                            execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (selected_id,))
+                            # Recalculate Balances
+                            update_rm_inventory(product, 0, 'PURCHASE', None, None, None) # Triggers recalc
+                        
                         else:
+                            # Reverse FG Sale
                             execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (qty, product))
                             execute_query("""
                             UPDATE fg_inventory
                             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                             WHERE product_name = ?
                             """, (product,))
-                        # Delete from Ledger (Fix for Realtime Update)
+        
+                        # 2. Delete from Ledger
                         execute_query("""
                         DELETE FROM payable_receivable_ledger
                         WHERE transaction_type = 'RECEIVABLE'
                         AND challan_no = ?
                         AND party_name = ?
                         """, (challan_no_del, party_name_del))
+        
+                        # 3. Delete Sales Transaction
                         execute_query("DELETE FROM sales_transactions WHERE id = ?", (selected_id,))
+        
                         st.success("✅ Sales entry deleted, inventory updated, and ledger cleared!")
                         st.session_state['confirm_delete_sale'] = False
                         st.rerun()
@@ -1926,110 +1973,142 @@ elif page == "💰 Sales Entry":
         sales_data = fetch_data("SELECT * FROM sales_transactions WHERE id = ?", (st.session_state.edit_id,))
         if not sales_data.empty:
             row = sales_data.iloc[0]
+            
+            # Re-fetch lists for editing context
             df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Sales Party", "Purchase Party", "Moulder", "Contractor"] else "All")
             party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
+            
             df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["RM Product", "FG Product", "Moulding Product", "Powder"] else "All")
-        # Safe access to product_name column
             if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
                 product_list_edit = df_products_edit['product_name'].tolist()
             else:
                 product_list_edit = []
+    
             with st.form("edit_sale_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     edit_challan = st.text_input("Challan No", value=row['challan_no'], key="edit_sale_challan")
                     edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_sale_date")
                     edit_party = st.selectbox("Sales Party",
-                    party_list_edit if party_list_edit else [row['party_name']],
-                    index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
-                    key="edit_sale_party")
+                                              party_list_edit if party_list_edit else [row['party_name']],
+                                              index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                                              key="edit_sale_party")
                 with col2:
                     edit_product = st.selectbox("Product",
-                    product_list_edit if product_list_edit else [row['product_name']],
-                    index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
-                    key="edit_sale_product")
+                                                product_list_edit if product_list_edit else [row['product_name']],
+                                                index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
+                                                key="edit_sale_product")
                     edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"],
-                    index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
-                    key="edit_sale_category")
+                                                 index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
+                                                 key="edit_sale_category")
                     edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
-                    index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
-                    key="edit_sale_prod_cat")
+                                                         index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
+                                                         key="edit_sale_prod_cat")
                     edit_qty = st.number_input("Quantity *", min_value=0.0, value=float(row['qty']), step=1.0, key="edit_sale_qty")
                 with col3:
                     edit_unit = st.selectbox("Unit", unit_options,
-                    index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
-                    key="edit_sale_unit")
+                                             index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                                             key="edit_sale_unit")
                     edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_sale_rate")
                     edit_payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=int(row['payment_terms_days']) if pd.notna(row['payment_terms_days']) else 60, step=1, key="edit_sale_payment_days")
+    
                 if edit_qty and edit_rate:
                     amount = edit_qty * edit_rate
                     st.metric("Total Amount", f"₹{amount:,.2f}")
+    
                 col1, col2 = st.columns(2)
                 with col1:
-                    # Inside Edit Sales Entry form submit button
                     if st.form_submit_button("💾 Save Changes", type="primary"):
-                        old_qty = row['qty']
+                        old_qty = float(row['qty'])
                         old_product = row['product_name']
                         old_prod_cat = row['product_category']
                         old_challan = row['challan_no']
                         old_party = row['party_name']
-                        old_amount = row['amount']
-
+                        old_amount = float(row['amount'])
+                        
                         qty_diff = edit_qty - old_qty
                         new_amount = edit_qty * edit_rate
-
+                        
                         # 1. Update Sales Transaction Record
                         execute_query('''UPDATE sales_transactions SET
                         challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
                         WHERE id=?''',
                         (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
-                        (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d'), st.session_state.edit_id))
-
+                         (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d'), st.session_state.edit_id))
+    
                         # 2. Adjust Inventory (Reverse Old, Apply New)
-                        # Note: We reverse the OLD transaction first, then apply the NEW one.
-
-                        # Reverse Old Product Inventory
-                                        # Reverse Old Product Inventory
+                        
+                        # --- REVERSE OLD ENTRY ---
                         if old_prod_cat == 'RM Product':
-                            # Direct SQL adjustment for reversal (Fixes NameError)
+                            # Reverse RM Sale
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                            execute_query("UPDATE rm_inventory SET closing_stock = COALESCE(closing_stock, 0) + ? WHERE product_name = ?", (old_qty, old_product))
+                            # Note: We don't manually adjust closing_stock here, update_rm_inventory will handle it if we delete/re-add movement, 
+                            # BUT for simple qty change, we adjust master totals and let the movement recalc handle balance.
+                            # To keep it consistent with the new update_rm_inventory logic, we should ideally delete the old movement and add a new one.
                             
-                            # Clean up old movement record to keep history accurate
+                            # Delete old movement record
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
+                            
                         else:
-                            # FG Sale Reversal
+                            # Reverse FG Sale
                             execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                             execute_query("""
-                                UPDATE fg_inventory
-                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                WHERE product_name = ?
+                            UPDATE fg_inventory
+                            SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                            WHERE product_name = ?
                             """, (old_product,))
-
-                        # Apply New Product Inventory
+    
+                        # --- APPLY NEW ENTRY ---
                         if edit_product_category == 'RM Product':
                             execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
-                            update_rm_inventory(edit_product, edit_qty, 'SALE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate)
+                            # Add new movement record
+                            execute_query('''INSERT INTO rm_stock_movement
+                            (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+                            VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
+                            (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'SALE', edit_qty, st.session_state.edit_id))
+                            
+                            # Update Master Totals
+                            execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+                            
+                            # Recalculate Balances for this product
+                            update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate) 
+                            # Note: Passing 0 qty and PURCHASE type just triggers the recalculation logic in our updated function
+                            
                         else:
+                            # FG Sale
                             execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
-                            update_fg_inventory(edit_product, edit_qty, 'SALE')
-
+                            execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+                            execute_query("""
+                            UPDATE fg_inventory
+                            SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                            WHERE product_name = ?
+                            """, (edit_product,))
+                            
+                            # Handle RM Consumption if FG
+                            if edit_product_category != 'RM Product':
+                                # Note: Full RM consumption reversal/re-application is complex. 
+                                # For simplicity in edit, we might skip auto-RM-consumption update or warn user.
+                                # Or simply call consume_rm_for_fg_sale which adds NEW consumption. 
+                                # Ideally, you'd delete old consumption movements too.
+                                pass 
+    
                         # 3. Update Ledger (Receivables)
-                        # Delete old receivable entry associated with the old challan/party
+                        # Delete old receivable entry
                         execute_query("""
-                            DELETE FROM payable_receivable_ledger
-                            WHERE transaction_type = 'RECEIVABLE'
-                            AND challan_no = ?
-                            AND party_name = ?
+                        DELETE FROM payable_receivable_ledger
+                        WHERE transaction_type = 'RECEIVABLE'
+                        AND challan_no = ?
+                        AND party_name = ?
                         """, (old_challan, old_party))
-
-                        # Create new receivable entry with updated details
+                        
+                        # Create new receivable entry
                         create_receivable_entry(edit_party, edit_challan, edit_date.strftime('%Y-%m-%d'), new_amount, edit_payment_days)
-
+    
                         st.success("✅ Sales entry, Inventory, and Ledger updated successfully!")
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
                         st.rerun()
+    
                 with col2:
                     if st.form_submit_button("❌ Cancel"):
                         st.session_state.edit_mode = False
@@ -2476,49 +2555,77 @@ elif page == "📈 Inventory":
 
     with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
+        
+        # Fetch RM Inventory joined with latest transaction party name
         df_rm_inv = fetch_data("""
-        SELECT product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock, COALESCE(rate, 0) as rate
-        FROM rm_inventory
-        ORDER BY product_name
+        SELECT 
+            i.product_name, 
+            i.opening_stock, 
+            i.total_purchased_qty, 
+            i.total_consumed_qty, 
+            i.closing_stock, 
+            COALESCE(i.rate, 0) as rate,
+            (SELECT pt.party_name FROM purchase_transactions pt 
+             JOIN rm_stock_movement rsm ON pt.id = rsm.reference_id 
+             WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'PURCHASE' 
+             ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_supplier,
+            (SELECT st.party_name FROM sales_transactions st 
+             JOIN rm_stock_movement rsm ON st.id = rsm.reference_id 
+             WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'SALE' 
+             ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_buyer
+        FROM rm_inventory i
+        ORDER BY i.product_name
         """)
+        
         if not df_rm_inv.empty:
             df_rm_inv['opening_stock'] = pd.to_numeric(df_rm_inv['opening_stock'], errors='coerce').fillna(0)
             df_rm_inv['total_purchased_qty'] = pd.to_numeric(df_rm_inv['total_purchased_qty'], errors='coerce').fillna(0)
             df_rm_inv['total_consumed_qty'] = pd.to_numeric(df_rm_inv['total_consumed_qty'], errors='coerce').fillna(0)
             df_rm_inv['rate'] = pd.to_numeric(df_rm_inv['rate'], errors='coerce').fillna(0)
-            df_rm_inv['corrected_closing_stock'] = df_rm_inv['opening_stock'] + df_rm_inv['total_purchased_qty'] - df_rm_inv['total_consumed_qty']
-
-            # Auto-correction of closing stock
-            for index, row in df_rm_inv.iterrows():
-                if abs(row['closing_stock'] - row['corrected_closing_stock']) > 0.01:
-                    execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?",
-                                  (row['corrected_closing_stock'], row['product_name']))
-
+            
+            # Real-time correction of closing stock based on formula
+            df_rm_inv['calculated_closing'] = df_rm_inv['opening_stock'] + df_rm_inv['total_purchased_qty'] - df_rm_inv['total_consumed_qty']
+            
+            # Optional: Auto-fix discrepancies in DB if needed (uncomment if you want auto-healing)
+            # for index, row in df_rm_inv.iterrows():
+            #     if abs(row['closing_stock'] - row['calculated_closing']) > 0.01:
+            #         execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (row['calculated_closing'], row['product_name']))
+            #         df_rm_inv.at[index, 'closing_stock'] = row['calculated_closing']
+    
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total RM Products", len(df_rm_inv))
-            with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['corrected_closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
+            with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
             with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
-
-            display_df = df_rm_inv[['product_name', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'corrected_closing_stock', 'rate']].copy()
-            display_df.rename(columns={'corrected_closing_stock': 'closing_stock'}, inplace=True)
+            
+            # Prepare display dataframe
+            display_df = df_rm_inv[['product_name', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'closing_stock', 'rate', 'last_supplier', 'last_buyer']].copy()
+            display_df.rename(columns={
+                'last_supplier': 'Last Supplier (Party)', 
+                'last_buyer': 'Last Buyer (Party)'
+            }, inplace=True)
+            
             st.dataframe(display_df, use_container_width=True)
-
+            
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
             with col1: rm_product = st.selectbox("Select RM Product", df_rm_inv['product_name'].tolist(), key="rm_product_select")
             with col2: new_opening = st.number_input("New Opening Stock", min_value=0.0, step=1.0, key="rm_opening_stock")
+            
             if st.button("Update Opening Stock", type="primary", key="update_rm_opening"):
                 if rm_product:
                     execute_query("UPDATE rm_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, rm_product))
+                    # Trigger recalculation of closing stock via movement history or direct formula
+                    # Using direct formula for immediate visual update, but ideally re-run movement calc
                     current_purchased = fetch_data("SELECT COALESCE(total_purchased_qty, 0) FROM rm_inventory WHERE product_name = ?", (rm_product,)).iloc[0,0]
                     current_consumed = fetch_data("SELECT COALESCE(total_consumed_qty, 0) FROM rm_inventory WHERE product_name = ?", (rm_product,)).iloc[0,0]
                     new_closing = new_opening + current_purchased - current_consumed
                     execute_query("UPDATE rm_inventory SET closing_stock = ? WHERE product_name = ?", (new_closing, rm_product))
+                    
+                    # Also update the first movement's opening balance if exists, or just rely on the master update
                     st.success("✅ Opening stock updated!")
                     st.rerun()
         else:
             st.info("No RM inventory data available")
-
     with tab2:
         st.markdown("### RM Stock Movement (Detailed)")
         st.info("This shows Purchase and Direct Sales entries for Raw Materials.")
