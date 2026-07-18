@@ -298,7 +298,7 @@ def update_rm_inventory(product, qty, transaction_type='PURCHASE', transaction_d
     if transaction_type == 'PURCHASE':
         closing_balance = opening_balance + qty
         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
-    
+    elif transaction_type == 'SALE':
     elif transaction_type == 'SALE': 
         if opening_balance < qty:
             raise Exception(f"Insufficient Stock! Available: {opening_balance}, Requested: {qty}")
@@ -1656,100 +1656,100 @@ elif page == "🏭 Production Entry":
                     st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
 
     # Edit Mode Logic
-        if st.session_state.edit_mode and st.session_state.edit_table == 'production':
-            st.markdown("### ✏️ Edit Production Entry")
-            production_data = fetch_data("SELECT * FROM production_register WHERE id = ?", (st.session_state.edit_id,))
-    
-            if not production_data.empty:
-                # FIX: Use .iloc[0] to get the first row as a Series, then access by column name
-                row = production_data.iloc[0]
-    
-                df_parties_edit_all = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Moulder', 'Contractor', 'Purchase Party') ORDER BY party_name")
-                party_list_edit = df_parties_edit_all['party_name'].tolist() if not df_parties_edit_all.empty else []
-    
-                df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
-            # Safe access to product_name column
-                if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
-                    product_list_edit = df_products_edit['product_name'].tolist()
-                else:
-                    product_list_edit = []
-                with st.form("edit_production_form"):
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        edit_challan = st.text_input("Challan No", value=row['challan_no'] if pd.notna(row['challan_no']) else "", key="edit_prod_challan")
-                        edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_prod_date")
-                        edit_party = st.selectbox("Party/Moulder/Contractor",
-                                                  party_list_edit if party_list_edit else [row['party_name']],
-                                                  index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
-                                                  key="edit_prod_party")
-                    with col2:
-                        edit_product = st.selectbox("Product",
-                                                    product_list_edit if product_list_edit else [row['fg_product']],
-                                                    index=product_list_edit.index(row['fg_product']) if row['fg_product'] in product_list_edit else 0,
-                                                    key="edit_prod_product")
-                        edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
-                                                             index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
-                                                             key="edit_prod_prod_cat")
-                        edit_qty = st.number_input("Produced Qty *", min_value=0.0, value=float(row['produced_qty']), step=1.0, key="edit_prod_qty")
-                        edit_unit = st.selectbox("Unit", unit_options,
-                                                 index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
-                                                 key="edit_prod_unit")
-                    with col3:
-                        edit_description = st.text_area("Description", value=row['description'] if pd.notna(row['description']) else "", key="edit_prod_desc")
-    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.form_submit_button("💾 Save Changes", type="primary"):
-                            old_qty = row['produced_qty']
-                            old_product = row['fg_product']
-                            qty_diff = edit_qty - old_qty
-    
-                            # Update Transaction Record
-                            execute_query('''UPDATE production_register SET
-                            challan_no=?, date=?, party_name=?, fg_product=?, product_category=?, produced_qty=?, unit=?, description=?
-                            WHERE id=?''',
-                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_product_category, edit_qty, edit_unit, edit_description, st.session_state.edit_id))
-    
-                            # Update Inventory Logic
-                            if old_product == edit_product:
-                                if qty_diff != 0:
-                                    execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                                    execute_query("""
-                                        UPDATE fg_inventory
-                                        SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                        WHERE product_name = ?
-                                    """, (edit_product,))
-                            else:
-                                # Product Changed: Reverse Old, Add New
-                                execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                                execute_query("""
-                                    UPDATE fg_inventory
-                                    SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
-                                    WHERE product_name = ?
-                                """, (old_product,))
-    
-                                execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
-                                execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+    if st.session_state.edit_mode and st.session_state.edit_table == 'production':
+        st.markdown("### ✏️ Edit Production Entry")
+        production_data = fetch_data("SELECT * FROM production_register WHERE id = ?", (st.session_state.edit_id,))
+
+        if not production_data.empty:
+            # FIX: Use .iloc[0] to get the first row as a Series, then access by column name
+            row = production_data.iloc[0]
+
+            df_parties_edit_all = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Moulder', 'Contractor', 'Purchase Party') ORDER BY party_name")
+            party_list_edit = df_parties_edit_all['party_name'].tolist() if not df_parties_edit_all.empty else []
+
+            df_products_edit, _ = get_dynamic_lists(row['product_category'] if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else "All")
+        # Safe access to product_name column
+            if not df_products_edit.empty and 'product_name' in df_products_edit.columns:
+                product_list_edit = df_products_edit['product_name'].tolist()
+            else:
+                product_list_edit = []
+            with st.form("edit_production_form"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    edit_challan = st.text_input("Challan No", value=row['challan_no'] if pd.notna(row['challan_no']) else "", key="edit_prod_challan")
+                    edit_date = st.date_input("Date", datetime.strptime(row['date'], '%Y-%m-%d'), key="edit_prod_date")
+                    edit_party = st.selectbox("Party/Moulder/Contractor",
+                                              party_list_edit if party_list_edit else [row['party_name']],
+                                              index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
+                                              key="edit_prod_party")
+                with col2:
+                    edit_product = st.selectbox("Product",
+                                                product_list_edit if product_list_edit else [row['fg_product']],
+                                                index=product_list_edit.index(row['fg_product']) if row['fg_product'] in product_list_edit else 0,
+                                                key="edit_prod_product")
+                    edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
+                                                         index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
+                                                         key="edit_prod_prod_cat")
+                    edit_qty = st.number_input("Produced Qty *", min_value=0.0, value=float(row['produced_qty']), step=1.0, key="edit_prod_qty")
+                    edit_unit = st.selectbox("Unit", unit_options,
+                                             index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
+                                             key="edit_prod_unit")
+                with col3:
+                    edit_description = st.text_area("Description", value=row['description'] if pd.notna(row['description']) else "", key="edit_prod_desc")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.form_submit_button("💾 Save Changes", type="primary"):
+                        old_qty = row['produced_qty']
+                        old_product = row['fg_product']
+                        qty_diff = edit_qty - old_qty
+
+                        # Update Transaction Record
+                        execute_query('''UPDATE production_register SET
+                        challan_no=?, date=?, party_name=?, fg_product=?, product_category=?, produced_qty=?, unit=?, description=?
+                        WHERE id=?''',
+                        (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_product_category, edit_qty, edit_unit, edit_description, st.session_state.edit_id))
+
+                        # Update Inventory Logic
+                        if old_product == edit_product:
+                            if qty_diff != 0:
+                                execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
                                 execute_query("""
                                     UPDATE fg_inventory
                                     SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                                     WHERE product_name = ?
                                 """, (edit_product,))
-    
-                            st.success("✅ Production entry updated successfully!")
-                            st.session_state.edit_mode = False
-                            st.session_state.edit_id = None
-                            st.rerun()
-    
-                    with col2:
-                        if st.form_submit_button("❌ Cancel"):
-                            st.session_state.edit_mode = False
-                            st.session_state.edit_id = None
-                            st.rerun()
-    
-        st.markdown("### All Production Entries")
-        if not df_all_production.empty:
-            st.dataframe(df_all_production, use_container_width=True)
+                        else:
+                            # Product Changed: Reverse Old, Add New
+                            execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
+                            execute_query("""
+                                UPDATE fg_inventory
+                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                                WHERE product_name = ?
+                            """, (old_product,))
+
+                            execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
+                            execute_query("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+                            execute_query("""
+                                UPDATE fg_inventory
+                                SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
+                                WHERE product_name = ?
+                            """, (edit_product,))
+
+                        st.success("✅ Production entry updated successfully!")
+                        st.session_state.edit_mode = False
+                        st.session_state.edit_id = None
+                        st.rerun()
+
+                with col2:
+                    if st.form_submit_button("❌ Cancel"):
+                        st.session_state.edit_mode = False
+                        st.session_state.edit_id = None
+                        st.rerun()
+
+    st.markdown("### All Production Entries")
+    if not df_all_production.empty:
+        st.dataframe(df_all_production, use_container_width=True)
 # ======================= SALES ENTRY =======================
 elif page == "💰 Sales Entry":
     st.subheader("💰 Sales Entry")
