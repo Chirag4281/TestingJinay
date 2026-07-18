@@ -2110,6 +2110,9 @@ elif page == "💰 Sales Entry":
                                         # 2. Adjust Inventory (Reverse Old, Apply New)
                 
                         # --- REVERSE OLD ENTRY ---
+                                        # 2. Adjust Inventory (Reverse Old, Apply New)
+                
+                # --- REVERSE OLD ENTRY ---
                         if old_prod_cat == 'RM Product':
                             # 1. Delete the old movement record completely so it doesn't count twice
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
