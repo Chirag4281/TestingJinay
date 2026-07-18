@@ -2618,11 +2618,11 @@ elif page == "📈 Inventory":
 
     with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
-        
-        # Fetch RM Inventory joined with latest transaction party name
+        # Fetch RM Inventory joined with product_master to get real-time Category
         df_rm_inv = fetch_data("""
         SELECT 
             i.product_name, 
+            COALESCE(m.category, 'RM Product') as category,
             i.opening_stock, 
             i.total_purchased_qty, 
             i.total_consumed_qty, 
@@ -2637,6 +2637,7 @@ elif page == "📈 Inventory":
              WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'SALE' 
              ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_buyer
         FROM rm_inventory i
+        LEFT JOIN product_master m ON i.product_name = m.product_name
         ORDER BY i.product_name
         """)
         
@@ -2654,9 +2655,10 @@ elif page == "📈 Inventory":
             with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
             with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
             
-            # Prepare display dataframe
-            display_df = df_rm_inv[['product_name', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'closing_stock', 'rate', 'last_supplier', 'last_buyer']].copy()
+            # Prepare display dataframe with Category included
+            display_df = df_rm_inv[['product_name', 'category', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'closing_stock', 'rate', 'last_supplier', 'last_buyer']].copy()
             display_df.rename(columns={
+                'category': 'Product Category',
                 'last_supplier': 'Last Supplier (Party)', 
                 'last_buyer': 'Last Buyer (Party)'
             }, inplace=True)
@@ -2794,14 +2796,14 @@ elif page == "📈 Inventory":
             st.info("No RM stock movement data available")
     with tab3:
         st.markdown("### FG (Finished Goods) Inventory")
-        # UPDATED QUERY: Join with sales_transactions to show last sold to / contractor if applicable
+        # UPDATED QUERY: Join with product_master to get real-time Category
         df_fg_inv = fetch_data("""
-        SELECT i.product_name, i.opening_stock, i.produced_qty, i.purchased_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
+        SELECT i.product_name, COALESCE(m.category, 'FG Product') as category, i.opening_stock, i.produced_qty, i.purchased_qty, i.sold_qty, i.rejected_qty, i.closing_stock, m.rate, m.unit
         FROM fg_inventory i LEFT JOIN product_master m ON i.product_name = m.product_name
         WHERE m.category IN ('FG Product', 'Moulding Product', 'Powder') OR m.category IS NULL
         ORDER BY i.product_name
         """)
-
+        
         if not df_fg_inv.empty:
             # Enrich with Last Party Info (Real-time Name Display)
             last_parties = []
@@ -2818,20 +2820,25 @@ elif page == "📈 Inventory":
                         last_parties.append(f"Moulded by: {prod_res['party_name'].iloc[0]}")
                     else:
                         last_parties.append("N/A")
-
+            
             df_fg_inv['Last Interaction'] = last_parties
-
+            
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total FG Products", len(df_fg_inv))
             with col2: st.metric("Total Stock Value", f"₹{(df_fg_inv['closing_stock'] * df_fg_inv['rate'].fillna(0)).sum():,.2f}")
             with col3: st.metric("Total Produced", f"{df_fg_inv['produced_qty'].sum():,.0f}")
-
-            st.dataframe(df_fg_inv, use_container_width=True)
-
+            
+            # Display dataframe with Category included
+            display_fg_df = df_fg_inv[['product_name', 'category', 'opening_stock', 'produced_qty', 'purchased_qty', 'sold_qty', 'rejected_qty', 'closing_stock', 'rate', 'unit', 'Last Interaction']].copy()
+            display_fg_df.rename(columns={'category': 'Product Category'}, inplace=True)
+            
+            st.dataframe(display_fg_df, use_container_width=True)
+            
             st.markdown("### Update Opening Stock")
             col1, col2 = st.columns(2)
             with col1: fg_product = st.selectbox("Select FG Product", df_fg_inv['product_name'].tolist(), key="fg_product_select")
             with col2: new_opening = st.number_input("New Opening Stock", min_value=0.0, step=1.0, key="fg_opening_stock")
+            
             if st.button("Update Opening Stock", type="primary", key="update_fg_opening"):
                 if fg_product:
                     execute_query("UPDATE fg_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, fg_product))
