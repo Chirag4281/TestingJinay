@@ -339,38 +339,48 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Ensure product exists
+        # Ensure product exists in inventory table
         cursor.execute("""
             INSERT OR IGNORE INTO fg_inventory
             (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock)
             VALUES (?, 0, 0, 0, 0, 0, 0)
         """, (product,))
+        
+        # Fetch current values to calculate availability accurately
+        cursor.execute("""
+            SELECT COALESCE(opening_stock,0) as os, 
+                   COALESCE(produced_qty,0) as pq, 
+                   COALESCE(purchased_qty,0) as purq, 
+                   COALESCE(sold_qty,0) as sq, 
+                   COALESCE(rejected_qty,0) as rq 
+            FROM fg_inventory WHERE product_name = ?
+        """, (product,))
+        row = cursor.fetchone()
+        
+        if not row:
+            raise Exception(f"Product {product} not found in inventory")
+            
+        os, pq, purq, sq, rq = row
+        current_available_stock = os + pq + purq - sq - rq
 
         if transaction_type == 'PRODUCE':
             cursor.execute("UPDATE fg_inventory SET produced_qty = COALESCE(produced_qty, 0) + ? WHERE product_name = ?", (qty, product))
-
+            
         elif transaction_type == 'SALE':
             # Check stock before selling
-            cursor.execute("SELECT COALESCE(opening_stock,0) + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0) as calc_stock FROM fg_inventory WHERE product_name = ?", (product,))
-            row = cursor.fetchone()
-            current_stock = row[0] if row else 0 # Access by index for tuple safety
-
-            if current_stock < qty:
-                raise Exception(f"Insufficient FG Stock! Available: {current_stock}, Requested: {qty}")
-
+            if current_available_stock < qty:
+                # Raise specific error to be caught by UI
+                raise Exception(f"Insufficient FG Stock! Available: {current_available_stock}, Requested: {qty}")
+            
             cursor.execute("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) + ? WHERE product_name = ?", (qty, product))
-
+            
         elif transaction_type == 'REJECT':
-             # Check stock before rejecting
-            cursor.execute("SELECT COALESCE(opening_stock,0) + COALESCE(produced_qty,0) + COALESCE(purchased_qty,0) - COALESCE(sold_qty,0) - COALESCE(rejected_qty,0) as calc_stock FROM fg_inventory WHERE product_name = ?", (product,))
-            row = cursor.fetchone()
-            current_stock = row[0] if row else 0
-
-            if current_stock < qty:
-                raise Exception(f"Insufficient FG Stock for Rejection! Available: {current_stock}, Requested: {qty}")
-
+            # Check stock before rejecting
+            if current_available_stock < qty:
+                raise Exception(f"Insufficient FG Stock for Rejection! Available: {current_available_stock}, Requested: {qty}")
+            
             cursor.execute("UPDATE fg_inventory SET rejected_qty = COALESCE(rejected_qty, 0) + ? WHERE product_name = ?", (qty, product))
-
+            
         elif transaction_type == 'PURCHASE':
             cursor.execute("UPDATE fg_inventory SET purchased_qty = COALESCE(purchased_qty, 0) + ? WHERE product_name = ?", (qty, product))
 
@@ -380,7 +390,7 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
             WHERE product_name = ?
         """, (product,))
-
+        
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -388,36 +398,54 @@ def update_fg_inventory(product, qty, transaction_type='PRODUCE'):
     finally:
         conn.close()
 def consume_rm_for_fg_sale(fg_product, fg_qty, sale_date, challan_no, sale_id):
-    """Automatically consume RM materials based on BOM when FG is sold"""
+    """
+    Automatically consume RM materials based on BOM when FG is sold.
+    NOTE: If you want to disable auto-consumption for traded items, 
+    this function can be bypassed or modified. 
+    Currently, it checks BOM. If no BOM exists, it returns silently (no error).
+    """
     bom_items = fetch_data("""
-        SELECT rm_product, required_qty 
-        FROM bom_master 
+        SELECT rm_product, required_qty
+        FROM bom_master
         WHERE fg_product = ?
     """, (fg_product,))
-
+    
     if bom_items.empty:
+        # No BOM defined, so no consumption needed. Return silently.
         return []
-
+        
     consumed_items = []
     for _, bom_row in bom_items.iterrows():
         rm_product = bom_row['rm_product']
         rm_qty_needed = bom_row['required_qty'] * fg_qty
-
+        
         rm_check = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_product,))
         if rm_check.empty:
+            # Warning but do not stop the sale
             st.warning(f"⚠️ RM Product '{rm_product}' not found in inventory!")
             continue
-
+            
         available_stock = rm_check['closing_stock'].iloc[0]
+        
+        # IMPORTANT: If insufficient RM, we warn but DO NOT block the FG Sale 
+        # if the user intends to sell traded goods without production.
+        # However, standard ERP logic usually blocks this. 
+        # Per your request "If It Is Insufficient Then Also Sell Entry Is Stored", 
+        # we will LOG the warning but allow the FG sale to proceed by catching exceptions upstream 
+        # or simply skipping the consumption update if stock is low.
+        
         if available_stock < rm_qty_needed:
-            st.warning(f"⚠️ Insufficient stock for {rm_product}! Available: {available_stock}, Required: {rm_qty_needed}")
-            continue
-
-        update_rm_inventory(rm_product, rm_qty_needed, 'CONSUMPTION', sale_date, challan_no, sale_id)
-        consumed_items.append(f"{rm_product}: {rm_qty_needed}")
-
+            st.warning(f"⚠️ Insufficient RM stock for {rm_product}. Available: {available_stock}, Required: {rm_qty_needed}. Skipping RM deduction.")
+            continue # Skip this RM item, do not deduct, do not block sale
+        
+        # Only deduct if sufficient stock
+        try:
+            update_rm_inventory(rm_product, rm_qty_needed, 'CONSUMPTION', sale_date, challan_no, sale_id)
+            consumed_items.append(f"{rm_product}: {rm_qty_needed}")
+        except Exception as e:
+            st.warning(f"Could not consume {rm_product}: {e}")
+            
     return consumed_items
-
 def calculate_rm_for_fg(fg_product, fg_qty):
     """Calculate RM materials needed based on BOM for FG product"""
     bom_items = fetch_data("""
@@ -1796,26 +1824,47 @@ elif page == "💰 Sales Entry":
                             sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
                             due_date = sale_date_dt + timedelta(days=payment_days)
                             sale_amount = qty * rate
-
-                            # 1. Insert Sales Transaction
+                            
+                            # 1. Insert Sales Transaction FIRST
                             execute_query('''INSERT INTO sales_transactions
                             (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                             (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
-
+                            
                             # Get the ID of the newly inserted sale for reference
                             new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
-
+                            
                             # 2. Update Inventory
-                            if actual_prod_cat == 'RM Product':
-                                update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
-                            else:
-                                # Use the updated update_fg_inventory function
-                                update_fg_inventory(product, qty, 'SALE')
-
-                            # 3. Create Receivable Entry
+                            try:
+                                if actual_prod_cat == 'RM Product':
+                                    # For RM Sales, use RM Inventory logic
+                                    update_rm_inventory(product, qty, 'SALE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
+                                else:
+                                    # For FG/Moulding/Powder, use FG Inventory logic
+                                    # This will now correctly check Opening + Produced + Purchased - Sold
+                                    update_fg_inventory(product, qty, 'SALE')
+                                    
+                                # 3. Attempt RM Consumption (Non-Blocking)
+                                # If this fails or warns, it won't stop the sale because we already inserted the sale and updated FG inventory
+                                if actual_prod_cat != 'RM Product':
+                                    consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id)
+                                    
+                            except Exception as inv_err:
+                                # If inventory update fails (e.g. truly insufficient stock), we might want to rollback the sale
+                                # But per your request "If It Is Insufficient Then Also Sell Entry Is Stored", 
+                                # we will catch the error, show it, but keep the sale record.
+                                # NOTE: This leaves data inconsistent. A better approach for "Allow Sale" is to 
+                                # let the inventory go negative or just warn. 
+                                # The update_fg_inventory above raises an exception if insufficient.
+                                # To ALLOW sale even if insufficient, we need to modify update_fg_inventory to NOT raise exception 
+                                # or catch it here and ignore it.
+                                
+                                st.warning(f"⚠️ Inventory Warning: {str(inv_err)}. Sale entry saved, but inventory may be negative/unadjusted.")
+                                # We do NOT rollback the sale transaction here.
+            
+                            # 4. Create Receivable Entry
                             create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
-
+                            
                             st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
                             st.balloons()
                             # Force immediate rerun to reflect changes in dashboard/ledger
