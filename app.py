@@ -1387,9 +1387,6 @@ elif page == "🛒 Purchase Entry":
                 else:
                     st.session_state['confirm_delete_purchase'] = True
                     st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
-                    else:
-                        st.session_state['confirm_delete_purchase'] = True
-                        st.warning("⚠️ Click again to confirm deletion. This will reverse inventory changes.")
     if st.session_state.edit_mode and st.session_state.edit_table == 'purchase':
         st.markdown("### ✏️ Edit Purchase Entry")
         purchase_data = fetch_data("SELECT * FROM purchase_transactions WHERE id = ?", (st.session_state.edit_id,))
