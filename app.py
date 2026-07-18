@@ -2107,11 +2107,15 @@ elif page == "💰 Sales Entry":
                         # --- REVERSE OLD ENTRY ---
                                         # --- REVERSE OLD ENTRY ---
                                         # --- REVERSE OLD ENTRY ---
+                                        # 2. Adjust Inventory (Reverse Old, Apply New)
+                
+                        # --- REVERSE OLD ENTRY ---
                         if old_prod_cat == 'RM Product':
-                            # Reverse RM Sale
+                            # 1. Delete the old movement record completely so it doesn't count twice
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
+                            # 2. Reverse the master total consumption
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
-                            # Recalculate Old Product
+                            # 3. Recalculate balances for the old product (removes the 50 from history)
                             update_rm_inventory(old_product, 0, 'PURCHASE')
                             
                         else:
@@ -2126,16 +2130,17 @@ elif page == "💰 Sales Entry":
                         # --- APPLY NEW ENTRY ---
                         if edit_product_category == 'RM Product':
                             execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
-                            # Add new movement record
+                            
+                            # Add NEW movement record for the edited quantity (500)
                             execute_query('''INSERT INTO rm_stock_movement
                             (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
                             VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
                             (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'SALE', edit_qty, st.session_state.edit_id))
                             
-                            # Update Master Totals
+                            # Update Master Totals with the NEW quantity
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
                             
-                            # Recalculate Balances for New Product
+                            # Recalculate Balances Realtime (This ensures Closing Stock = Opening + Purchase - 500)
                             update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate) 
                             
                         else:
