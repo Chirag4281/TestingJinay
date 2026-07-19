@@ -1727,6 +1727,7 @@ elif page == "🏭 Production Entry":
                     st.warning(f"⚠️ Are you sure? Click 'Delete' again to confirm. This will reverse inventory changes for ID: {selected_id}.")
 
     # Edit Mode Logic for Production
+        # Edit Mode Logic for Production
     if st.session_state.edit_mode and st.session_state.edit_table == 'production':
         st.markdown("### ✏️ Edit Production Entry")
         production_data = fetch_data("SELECT * FROM production_register WHERE id = ?", (st.session_state.edit_id,))
@@ -1774,7 +1775,7 @@ elif page == "🏭 Production Entry":
                             old_product = row['fg_product']
                             old_prod_cat = row['product_category']
                             
-                            # STEP 1: REVERSE THE OLD ENTRY COMPLETELY (MIRRORING PURCHASE EDIT LOGIC)
+                            # STEP 1: REVERSE THE OLD ENTRY COMPLETELY
                             if old_prod_cat == 'RM Product':
                                 # Delete old movement record
                                 execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
@@ -1797,21 +1798,33 @@ elif page == "🏭 Production Entry":
                             WHERE id=?''',
                             (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, old_prod_cat, edit_qty, edit_unit, edit_description, st.session_state.edit_id))
                             
-                            # STEP 3: APPLY THE NEW ENTRY (INSERT NEW MOVEMENT RECORD LIKE PURCHASE DOES)
+                            # STEP 3: APPLY THE NEW ENTRY (UPDATE MOVEMENT RECORD INSTEAD OF INSERT)
                             if old_prod_cat == 'RM Product':
                                 # Ensure RM Inventory record exists
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
                                 
-                                # Add new movement record using SAME reference_id (This creates a new ID in movement table, but update_rm_inventory handles recalc)
-                                execute_query('''INSERT INTO rm_stock_movement
-                                (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
-                                VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
-                                (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'PURCHASE', edit_qty, st.session_state.edit_id))
+                                # CHECK IF MOVEMENT RECORD EXISTS FOR THIS REFERENCE ID
+                                existing_mov = fetch_data("SELECT id FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
                                 
-                                # Update Master Totals
-                                execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+                                if not existing_mov.empty:
+                                    # UPDATE EXISTING RECORD (Keeps same ID, preserves order)
+                                    execute_query('''UPDATE rm_stock_movement 
+                                    SET transaction_date=?, challan_no=?, product_name=?, qty=? 
+                                    WHERE reference_id = ? AND transaction_type = 'PURCHASE' ''',
+                                    (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, edit_qty, st.session_state.edit_id))
+                                else:
+                                    # INSERT NEW ONLY IF IT WAS DELETED/MISSING (Fallback)
+                                    execute_query('''INSERT INTO rm_stock_movement
+                                    (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+                                    VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
+                                    (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'PURCHASE', edit_qty, st.session_state.edit_id))
                                 
-                                # Recalculate Balances
+                                # Update Master Totals by Difference
+                                qty_diff = edit_qty - old_qty
+                                if qty_diff != 0:
+                                     execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
+
+                                # Recalculate Balances Realtime
                                 update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id)
                             else:
                                 # FG Production
