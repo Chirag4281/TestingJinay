@@ -810,7 +810,7 @@ st.markdown("""
         margin-bottom: 2rem;
     }
     .metric-card {
-        background: white;
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
         padding: 1.5rem;
         border-radius: 10px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
@@ -846,7 +846,7 @@ st.markdown("""
         cursor: pointer;
     }
     .overdue-alert {
-        background-color: #ffebee;
+        background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
         border-left: 5px solid #f44336;
         padding: 10px;
         margin: 5px 0;
@@ -861,10 +861,220 @@ st.markdown("""
         box-shadow: 0 0 0 2px #667eea;
     }
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
-        padding: 10px;
+        background: linear-gradient(135deg, #e8f0fe 0%, #d4e0f7 100%);
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        border: 1px solid rgba(102, 126, 234, 0.2);
+    }
+    div[data-testid="stMetric"]:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        transform: translateY(-2px);
+        transition: all 0.3s ease;
+    }
+    div[data-testid="stMetric"] label {
+        color: #4a5568 !important;
+        font-weight: 600 !important;
+    }
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        color: #2d3748 !important;
+        font-weight: 700 !important;
+    }
+    .stDataFrame {
+        background: #f8fafc !important;
+        border-radius: 10px !important;
+        border: 1px solid #e2e8f0 !important;
+    }
+    .stDataFrame table {
+        background: #f8fafc !important;
+    }
+    .stDataFrame thead tr th {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        color: white !important;
+        font-weight: 600 !important;
+        padding: 12px !important;
+    }
+    .stDataFrame tbody tr {
+        background: #ffffff !important;
+    }
+    .stDataFrame tbody tr:nth-child(even) {
+        background: #f8fafc !important;
+    }
+    .stDataFrame tbody tr:hover {
+        background: #e8f0fe !important;
+        transition: background 0.2s ease;
+    }
+    .stAlert {
+        border-radius: 10px !important;
+        border-left: 5px solid !important;
+    }
+    .stAlert[data-testid="stAlert"] {
+        background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%) !important;
+    }
+    .stAlert[data-testid="stAlert"]:has(.stAlertIcon) {
+        border-left-color: #667eea !important;
+    }
+    div[data-testid="stForm"] {
+        background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%);
+        padding: 25px;
+        border-radius: 15px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+    div[data-testid="stForm"]:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        transition: all 0.3s ease;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: #f8fafc;
+        padding: 8px;
+        border-radius: 12px;
+        border: 1px solid #e2e8f0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        padding: 8px 16px;
+        color: #4a5568;
+        font-weight: 500;
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background: #e2e8f0;
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"]:hover {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+    div[data-testid="stSelectbox"] > div {
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #e2e8f0;
+    }
+    div[data-testid="stSelectbox"] > div:hover {
+        border-color: #667eea;
+    }
+    div[data-testid="stTextInput"] > div {
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #e2e8f0;
+    }
+    div[data-testid="stTextInput"] > div:hover {
+        border-color: #667eea;
+    }
+    div[data-testid="stNumberInput"] > div {
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #e2e8f0;
+    }
+    div[data-testid="stNumberInput"] > div:hover {
+        border-color: #667eea;
+    }
+    div[data-testid="stTextArea"] > div {
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #e2e8f0;
+    }
+    div[data-testid="stTextArea"] > div:hover {
+        border-color: #667eea;
+    }
+    div[data-testid="stDateInput"] > div {
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #e2e8f0;
+    }
+    div[data-testid="stDateInput"] > div:hover {
+        border-color: #667eea;
+    }
+    .stSuccess {
+        background: linear-gradient(135deg, #e6f7e6 0%, #b8e6b8 100%) !important;
+        border-left-color: #48bb78 !important;
+    }
+    .stError {
+        background: linear-gradient(135deg, #fce4e4 0%, #f8d0d0 100%) !important;
+        border-left-color: #fc8181 !important;
+    }
+    .stWarning {
+        background: linear-gradient(135deg, #fff5e6 0%, #ffe8cc 100%) !important;
+        border-left-color: #ed8936 !important;
+    }
+    .stInfo {
+        background: linear-gradient(135deg, #e6f0fa 0%, #cce0f5 100%) !important;
+        border-left-color: #4299e1 !important;
+    }
+    div[data-testid="stExpander"] {
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+    }
+    div[data-testid="stExpander"]:hover {
+        border-color: #667eea;
+    }
+    div[data-testid="stExpander"] summary {
+        background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%);
+        border-radius: 10px;
+        padding: 12px;
+        font-weight: 600;
+        color: #2d3748;
+    }
+    div[data-testid="stExpander"] summary:hover {
+        background: linear-gradient(135deg, #edf2f7 0%, #e2e8f0 100%);
+    }
+    div[data-testid="stDataFrame"] {
+        border-radius: 10px !important;
+        overflow: hidden !important;
+    }
+    .css-1aumxhk {
+        background: #f8fafc !important;
+    }
+    .css-18e3th9 {
+        background: #f8fafc !important;
+    }
+    .css-1d391kg {
+        background: #f8fafc !important;
+    }
+    .css-1r6slb0 {
+        background: #f8fafc !important;
+    }
+    .css-1a32fsj {
+        background: #f8fafc !important;
+    }
+    .css-17eq0hr {
+        background: #f8fafc !important;
+    }
+    .css-1qw3mlq {
+        background: #f8fafc !important;
+    }
+    .css-1aehpv6 {
+        background: #f8fafc !important;
+    }
+    .css-1v0mbdj {
+        background: #f8fafc !important;
+    }
+    .css-1pahdxg {
+        background: #f8fafc !important;
+    }
+    .css-1sj6t5s {
+        background: #f8fafc !important;
+    }
+    .css-1l4vz2s {
+        background: #f8fafc !important;
+    }
+    .css-1y4p8pa {
+        background: #f8fafc !important;
+    }
+    .css-1yk2r1w {
+        background: #f8fafc !important;
+    }
+    .css-1wh2j7h {
+        background: #f8fafc !important;
+    }
+    .css-1fv8s86 {
+        background: #f8fafc !important;
     }
 </style>
 """, unsafe_allow_html=True)
