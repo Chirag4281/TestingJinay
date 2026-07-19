@@ -1572,17 +1572,15 @@ elif page == "🛒 Purchase Entry":
     st.dataframe(df_all_purchases, use_container_width=True)
     st.metric("Total Purchase Value", f"₹{df_all_purchases['amount'].sum():,.2f}")
 # ======================= PRODUCTION ENTRY =======================
+# ======================= PRODUCTION ENTRY =======================
 elif page == "🏭 Production Entry":
     st.subheader("🏭 Production Entry")
-    
     # Initialize session state for filters if not present
     if 'prod_party_filter' not in st.session_state:
         st.session_state.prod_party_filter = "Moulder"
     if 'prod_prod_filter' not in st.session_state:
         st.session_state.prod_prod_filter = "All" # Default to All to see RM/FG
-
     unit_options = ["kg", "Gross", "g", "Pcs", "PCS"]
-    
     st.markdown("### 🔍 Filters")
     col_f1, col_f2 = st.columns(2)
     with col_f1:
@@ -1595,7 +1593,6 @@ elif page == "🏭 Production Entry":
         if party_filter != st.session_state.prod_party_filter:
             st.session_state.prod_party_filter = party_filter
             st.rerun()
-            
     with col_f2:
         prod_cat_filter = st.selectbox(
             "Filter Product By Category",
@@ -1606,47 +1603,35 @@ elif page == "🏭 Production Entry":
         if prod_cat_filter != st.session_state.prod_prod_filter:
             st.session_state.prod_prod_filter = prod_cat_filter
             st.rerun()
-
     st.markdown("---")
-    
     df_parties, _ = get_dynamic_lists(st.session_state.prod_party_filter)
     party_list = df_parties['party_name'].tolist() if not df_parties.empty else []
-    
     _, df_products = get_dynamic_lists(st.session_state.prod_prod_filter)
     product_list = df_products['product_name'].tolist() if not df_products.empty else []
-    
     # Map product details for auto-filling rate/unit
     product_details_map = {}
     if not df_products.empty:
         for _, row in df_products.iterrows():
             product_details_map[row['product_name']] = (row['rate'], row['unit'], row['category'])
-
     with st.form("production_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
             challan_no = st.text_input("Challan No")
             prod_date = st.date_input("Date", datetime.now())
             party_name = st.selectbox("Party/Moulder/Contractor", party_list if party_list else ["No parties added yet"])
-        
         with col2:
             fg_product = st.selectbox("Product to Produce", product_list if product_list else ["No products found"])
-            
             unit_val = 'PCS'
             actual_prod_cat = "FG Product" # Default
-            
             if fg_product in product_details_map:
                 r, u, c = product_details_map[fg_product]
                 unit_val = u
                 actual_prod_cat = c
-                
             produced_qty = st.number_input("Produced Qty *", min_value=0.0, step=1.0)
             unit = st.selectbox("Unit", unit_options, index=unit_options.index(unit_val) if unit_val in unit_options else 4)
-        
         with col3:
             description = st.text_area("Description")
-            
         submitted = st.form_submit_button("Save Production", type="primary")
-        
         if submitted:
             if all([party_name and party_name != "No parties added yet", fg_product and fg_product != "No products found", produced_qty > 0]):
                 try:
@@ -1656,36 +1641,30 @@ elif page == "🏭 Production Entry":
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                     (challan_no, prod_date.strftime('%Y-%m-%d'), party_name, fg_product, actual_prod_cat, produced_qty, unit, description))
                     
+                    # Get ID of new production entry
+                    new_prod_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
+
                     # 2. Update Inventory Based on Category
                     if actual_prod_cat == 'RM Product':
                         # Ensure RM Inventory record exists
                         execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (fg_product,))
-                        
                         # Add Movement Record for Production (Type: PURCHASE equivalent for RM)
-                        # We use 'PURCHASE' type for RM production so it adds to stock
-                        prod_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
-                        
                         execute_query('''INSERT INTO rm_stock_movement
                         (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
                         VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
-                        (prod_date.strftime('%Y-%m-%d'), challan_no, fg_product, 'PURCHASE', produced_qty, prod_id))
-                        
+                        (prod_date.strftime('%Y-%m-%d'), challan_no, fg_product, 'PURCHASE', produced_qty, new_prod_id))
                         # Update Master Totals
                         execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (produced_qty, fg_product))
-                        
                         # Recalculate Balances Realtime
-                        update_rm_inventory(fg_product, 0, 'PURCHASE', prod_date.strftime('%Y-%m-%d'), challan_no, prod_id)
-                        
+                        update_rm_inventory(fg_product, 0, 'PURCHASE', prod_date.strftime('%Y-%m-%d'), challan_no, new_prod_id)
                     elif actual_prod_cat in ['FG Product', 'Moulding Product', 'Powder']:
                         # Ensure FG Inventory record exists
                         execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (fg_product,))
-                        
                         # Update FG Inventory (Real-time)
                         update_fg_inventory(fg_product, produced_qty, 'PRODUCE')
                     
                     st.success(f"✅ Production entry saved successfully for {actual_prod_cat}!")
                     st.rerun()
-                    
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
             else:
@@ -1694,7 +1673,6 @@ elif page == "🏭 Production Entry":
     st.markdown("---")
     st.markdown("### 📋 Manage Production Entries")
     df_all_production = fetch_data("SELECT id, challan_no, date, party_name, fg_product, product_category, produced_qty, unit, description FROM production_register ORDER BY date DESC")
-    
     if not df_all_production.empty:
         production_options = [f"ID:{row['id']} | {row['fg_product']} ({row['product_category']}) | {row['produced_qty']} {row['unit']} | {row['party_name']} | {row['date']}" for _, row in df_all_production.iterrows()]
         selected_production = st.selectbox("Select Production Entry to Edit/Delete", production_options, key="select_production_manage")
@@ -1710,7 +1688,6 @@ elif page == "🏭 Production Entry":
                     st.rerun()
                 else:
                     st.warning("Please select a production entry first.")
-                
         with col2:
             if st.button("🗑️ Delete Selected Production", key="delete_production_btn"):
                 if not selected_id:
@@ -1722,13 +1699,13 @@ elif page == "🏭 Production Entry":
                         qty = record['produced_qty'].iloc[0]
                         prod_cat = record['product_category'].iloc[0]
                         
-                        # Reverse Inventory based on Category
+                        # Reverse Inventory based on Category (MIRRORING PURCHASE DELETE LOGIC)
                         if prod_cat == 'RM Product':
-                            # Delete Movement Record
+                            # 1. Delete Movement Record
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (selected_id,))
-                            # Reverse Master Totals
+                            # 2. Reverse Master Totals
                             execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                            # Recalculate Balances
+                            # 3. Recalculate Balances
                             update_rm_inventory(product, 0, 'PURCHASE')
                         else:
                             # Reverse FG Inventory
@@ -1738,7 +1715,8 @@ elif page == "🏭 Production Entry":
                             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                             WHERE product_name = ?
                             """, (product,))
-                            
+                        
+                        # 4. Delete Production Register Entry
                         execute_query("DELETE FROM production_register WHERE id = ?", (selected_id,))
                         st.success("✅ Production entry deleted and inventory updated!")
                         st.session_state['confirm_delete_production'] = None
@@ -1749,14 +1727,11 @@ elif page == "🏭 Production Entry":
                     st.warning(f"⚠️ Are you sure? Click 'Delete' again to confirm. This will reverse inventory changes for ID: {selected_id}.")
 
     # Edit Mode Logic for Production
-        # Edit Mode Logic for Production
-        # Edit Mode Logic for Production
     if st.session_state.edit_mode and st.session_state.edit_table == 'production':
         st.markdown("### ✏️ Edit Production Entry")
         production_data = fetch_data("SELECT * FROM production_register WHERE id = ?", (st.session_state.edit_id,))
         if not production_data.empty:
             row = production_data.iloc[0]
-            
             # Re-fetch lists for editing context
             df_parties_edit_all = fetch_data("SELECT party_name FROM party_master WHERE category IN ('Moulder', 'Contractor', 'Purchase Party') ORDER BY party_name")
             party_list_edit = df_parties_edit_all['party_name'].tolist() if not df_parties_edit_all.empty else []
@@ -1782,10 +1757,8 @@ elif page == "🏭 Production Entry":
                                                 product_list_edit if product_list_edit else [row['fg_product']],
                                                 index=product_list_edit.index(row['fg_product']) if row['fg_product'] in product_list_edit else 0,
                                                 key="edit_prod_product")
-                    
                     # Determine category for the edited product
                     edit_prod_cat = row['product_category']
-                    
                     edit_qty = st.number_input("Produced Qty *", min_value=0.0, value=float(row['produced_qty']), step=1.0, key="edit_prod_qty")
                     edit_unit = st.selectbox("Unit", unit_options,
                                              index=unit_options.index(row['unit']) if row['unit'] in unit_options else 4,
@@ -1801,7 +1774,7 @@ elif page == "🏭 Production Entry":
                             old_product = row['fg_product']
                             old_prod_cat = row['product_category']
                             
-                            # STEP 1: REVERSE THE OLD ENTRY COMPLETELY
+                            # STEP 1: REVERSE THE OLD ENTRY COMPLETELY (MIRRORING PURCHASE EDIT LOGIC)
                             if old_prod_cat == 'RM Product':
                                 # Delete old movement record
                                 execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
@@ -1818,53 +1791,49 @@ elif page == "🏭 Production Entry":
                                 WHERE product_name = ?
                                 """, (old_product,))
                             
-                            # STEP 2: UPDATE THE EXISTING TRANSACTION RECORD (NOT CREATE NEW)
+                            # STEP 2: UPDATE THE EXISTING TRANSACTION RECORD
                             execute_query('''UPDATE production_register SET
                             challan_no=?, date=?, party_name=?, fg_product=?, product_category=?, produced_qty=?, unit=?, description=?
                             WHERE id=?''',
                             (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, old_prod_cat, edit_qty, edit_unit, edit_description, st.session_state.edit_id))
                             
-                            # STEP 3: APPLY THE NEW ENTRY
-                            # STEP 3: APPLY THE NEW ENTRY (UPDATE EXISTING MOVEMENT RECORD INSTEAD OF INSERTING NEW)
-                                            # STEP 3: APPLY THE NEW ENTRY (UPDATE EXISTING MOVEMENT RECORD INSTEAD OF INSERTING NEW)
+                            # STEP 3: APPLY THE NEW ENTRY (INSERT NEW MOVEMENT RECORD LIKE PURCHASE DOES)
                             if old_prod_cat == 'RM Product':
                                 # Ensure RM Inventory record exists
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
                                 
-                                # UPDATE the existing movement record quantity instead of inserting a new one
-                                execute_query('''UPDATE rm_stock_movement 
-                                SET transaction_date=?, challan_no=?, product_name=?, qty=? 
-                                WHERE reference_id = ? AND transaction_type = 'PURCHASE' ''',
-                                (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, edit_qty, st.session_state.edit_id))
+                                # Add new movement record using SAME reference_id (This creates a new ID in movement table, but update_rm_inventory handles recalc)
+                                execute_query('''INSERT INTO rm_stock_movement
+                                (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+                                VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
+                                (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'PURCHASE', edit_qty, st.session_state.edit_id))
                                 
-                                # Update Master Totals: Since we updated the row, we don't add again. 
-                                # However, total_purchased_qty in master might need adjustment if product changed.
-                                # The safest way is to adjust by the difference.
-                                qty_diff = edit_qty - old_qty
-                                if qty_diff != 0:
-                                     execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-            
-                                # Recalculate Balances Realtime (This will now pick up the UPDATED quantity in the movement table)
+                                # Update Master Totals
+                                execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+                                
+                                # Recalculate Balances
                                 update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id)
                             else:
                                 # FG Production
                                 execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
                                 update_fg_inventory(edit_product, edit_qty, 'PRODUCE')
+                            
                             st.success("✅ Production entry updated successfully!")
                             st.session_state.edit_mode = False
                             st.session_state.edit_id = None
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error updating production entry: {str(e)}")
-                        
                 with col2:
                     if st.form_submit_button("❌ Cancel"):
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
                         st.rerun()
+    
     st.markdown("### All Production Entries")
     if not df_all_production.empty:
         st.dataframe(df_all_production, use_container_width=True)
+# ======================= SALES ENTRY =======================
 # ======================= SALES ENTRY =======================
 elif page == "💰 Sales Entry":
     st.subheader("💰 Sales Entry")
@@ -1928,7 +1897,7 @@ elif page == "💰 Sales Entry":
             st.metric("Total Amount", f"₹{amount:,.2f}")
         else:
             st.metric("Total Amount", "₹0.00")
-        # Inside elif page == "💰 Sales Entry": ... with st.form("sales_form"): ...
+        
         submitted = st.form_submit_button("Save Sale", type="primary")
         if submitted:
             if all([challan_no, party and party != "No parties added yet", product and product != "No products found", qty > 0]):
@@ -1951,7 +1920,7 @@ elif page == "💰 Sales Entry":
                             if not df_stock.empty:
                                 val = df_stock['closing_stock'].iloc[0]
                                 available = float(val) if pd.notna(val) else 0.0
-
+                        
                         if available < qty:
                             st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
                         else:
@@ -1969,19 +1938,15 @@ elif page == "💰 Sales Entry":
                             new_sale_id = fetch_data("SELECT last_insert_rowid() as id", ())['id'].iloc[0]
                             
                             # 2. Update Inventory
-                                            # 2. Update Inventory
-                                            # 2. Update Inventory
-                                            # 2. Update Inventory
                             try:
                                 if actual_prod_cat == 'RM Product':
                                     # Ensure RM Inventory record exists
                                     execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
-                                    
                                     # Check Stock Before Sale
                                     current_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
                                     if not current_stock.empty and float(current_stock['closing_stock'].iloc[0]) < qty:
                                         raise Exception(f"Insufficient RM Stock! Available: {current_stock['closing_stock'].iloc[0]}, Requested: {qty}")
-            
+                                    
                                     # Add Movement Record
                                     execute_query('''INSERT INTO rm_stock_movement
                                     (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
@@ -1991,57 +1956,46 @@ elif page == "💰 Sales Entry":
                                     # Update Master Totals
                                     execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
                                     
-                                    # Recalculate Balances Realtime (Same as Purchase)
+                                    # Recalculate Balances Realtime
                                     update_rm_inventory(product, 0, 'PURCHASE', sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id, rate=rate)
-            
                                 else:
                                     # For FG/Moulding/Powder, use FG Inventory logic
                                     update_fg_inventory(product, qty, 'SALE')
-                                    
-                                    # 3. Attempt RM Consumption (Non-Blocking)
-                                    if actual_prod_cat != 'RM Product':
-                                        consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id)                                            # 3. Attempt RM Consumption (Non-Blocking)
-                                            # If this fails or warns, it won't stop the sale because we already inserted the sale and updated FG inventory
-                               
-                                    
-                            except Exception as inv_err:
-                                # If inventory update fails (e.g. truly insufficient stock), we might want to rollback the sale
-                                # But per your request "If It Is Insufficient Then Also Sell Entry Is Stored", 
-                                # we will catch the error, show it, but keep the sale record.
-                                # NOTE: This leaves data inconsistent. A better approach for "Allow Sale" is to 
-                                # let the inventory go negative or just warn. 
-                                # The update_fg_inventory above raises an exception if insufficient.
-                                # To ALLOW sale even if insufficient, we need to modify update_fg_inventory to NOT raise exception 
-                                # or catch it here and ignore it.
                                 
+                                # 3. Attempt RM Consumption (Non-Blocking)
+                                if actual_prod_cat != 'RM Product':
+                                    consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, new_sale_id)
+                                
+                            except Exception as inv_err:
                                 st.warning(f"⚠️ Inventory Warning: {str(inv_err)}. Sale entry saved, but inventory may be negative/unadjusted.")
-                                # We do NOT rollback the sale transaction here.
-            
+                            
                             # 4. Create Receivable Entry
                             create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
                             
                             st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
                             st.balloons()
-                            # Force immediate rerun to reflect changes in dashboard/ledger
                             st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
             else:
                 st.warning("Please fill all required fields")
+
     st.markdown("---")
-    st.markdown("### 📝 Manage Sales Entries")
+    st.markdown("### 📋 Manage Sales Entries")
     df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date FROM sales_transactions ORDER BY date DESC")
     if not df_all_sales.empty:
         sales_options = [f"ID:{row['id']} | {row['challan_no']} | {row['product_name']} | {row['qty']} {row['unit']} | ₹{row['amount']:,.2f} | {row['party_name']} | {row['date']}" for _, row in df_all_sales.iterrows()]
         selected_sale = st.selectbox("Select Sales Entry to Edit/Delete", sales_options, key="select_sale_manage")
         selected_id = int(selected_sale.split('|')[0].replace('ID:', '').strip()) if selected_sale else None
+        
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✏️ Edit Selected Sale", type="primary", key="edit_sale_btn"):
-                st.session_state.edit_mode = True
-                st.session_state.edit_id = selected_id
-                st.session_state.edit_table = 'sale'
-                st.rerun()
+                if selected_id:
+                    st.session_state.edit_mode = True
+                    st.session_state.edit_id = selected_id
+                    st.session_state.edit_table = 'sale'
+                    st.rerun()
         with col2:
             if st.button("🗑️ Delete Selected Sale", key="delete_sale_btn"):
                 if st.session_state.get('confirm_delete_sale'):
@@ -2052,18 +2006,15 @@ elif page == "💰 Sales Entry":
                         prod_cat = record['product_category'].iloc[0]
                         challan_no_del = record['challan_no'].iloc[0]
                         party_name_del = record['party_name'].iloc[0]
-        
-                        # 1. Update Inventory
-                                        # 1. Update Inventory
-                                        # 1. Update Inventory
-                                        # 1. Update Inventory
+                        
+                        # 1. Update Inventory (MIRRORING PURCHASE DELETE LOGIC)
                         if prod_cat == 'RM Product':
                             # Reverse RM Sale: Delete movement record first
                             execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (selected_id,))
                             # Reverse master totals
                             execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (qty, product))
-                            # Recalculate Balances Realtime (Same as Purchase Delete)
-                            update_rm_inventory(product, 0, 'PURCHASE') 
+                            # Recalculate Balances Realtime
+                            update_rm_inventory(product, 0, 'PURCHASE')
                         else:
                             # Reverse FG Sale
                             execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (qty, product))
@@ -2071,7 +2022,8 @@ elif page == "💰 Sales Entry":
                             UPDATE fg_inventory
                             SET closing_stock = COALESCE(opening_stock, 0) + COALESCE(produced_qty, 0) + COALESCE(purchased_qty, 0) - COALESCE(sold_qty, 0) - COALESCE(rejected_qty, 0)
                             WHERE product_name = ?
-                            """, (product,))        
+                            """, (product,))
+                        
                         # 2. Delete from Ledger
                         execute_query("""
                         DELETE FROM payable_receivable_ledger
@@ -2079,24 +2031,23 @@ elif page == "💰 Sales Entry":
                         AND challan_no = ?
                         AND party_name = ?
                         """, (challan_no_del, party_name_del))
-        
+                        
                         # 3. Delete Sales Transaction
                         execute_query("DELETE FROM sales_transactions WHERE id = ?", (selected_id,))
-        
+                        
                         st.success("✅ Sales entry deleted, inventory updated, and ledger cleared!")
                         st.session_state['confirm_delete_sale'] = False
                         st.rerun()
                 else:
                     st.session_state['confirm_delete_sale'] = True
                     st.warning("⚠️ Click again to confirm deletion. This will reverse inventory and ledger changes.")
-        # Edit Mode Logic for Sales
-        # Edit Mode Logic for Sales
+
+    # Edit Mode Logic for Sales
     if st.session_state.edit_mode and st.session_state.edit_table == 'sale':
         st.markdown("### ✏️ Edit Sales Entry")
         sales_data = fetch_data("SELECT * FROM sales_transactions WHERE id = ?", (st.session_state.edit_id,))
         if not sales_data.empty:
             row = sales_data.iloc[0]
-            
             # Re-fetch lists for editing context
             df_parties_edit, _ = get_dynamic_lists(row['category'] if row['category'] in ["Sales Party", "Purchase Party", "Moulder", "Contractor"] else "All")
             party_list_edit = df_parties_edit['party_name'].tolist() if not df_parties_edit.empty else []
@@ -2106,7 +2057,7 @@ elif page == "💰 Sales Entry":
                 product_list_edit = df_products_edit['product_name'].tolist()
             else:
                 product_list_edit = []
-    
+
             with st.form("edit_sale_form"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -2117,14 +2068,14 @@ elif page == "💰 Sales Entry":
                                               index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
                                               key="edit_sale_party")
                 with col2:
-                    edit_product  = st.selectbox("Product",
+                    edit_product = st.selectbox("Product",
                                                 product_list_edit if product_list_edit else [row['product_name']],
                                                 index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
                                                 key="edit_sale_product")
                     edit_category = st.selectbox("Category", ["Party", "Moulder", "Contractor", "Powder"],
                                                  index=["Party", "Moulder", "Contractor", "Powder"].index(row['category']) if row['category'] in ["Party", "Moulder", "Contractor", "Powder"] else 0,
                                                  key="edit_sale_category")
-                    _category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
+                    edit_product_category = st.selectbox("Product Category", ["FG Product", "Moulding Product", "RM Product", "Powder"],
                                                          index=["FG Product", "Moulding Product", "RM Product", "Powder"].index(row['product_category']) if row['product_category'] in ["FG Product", "Moulding Product", "RM Product", "Powder"] else 0,
                                                          key="edit_sale_prod_cat")
                     edit_qty = st.number_input("Quantity *", min_value=0.0, value=float(row['qty']), step=1.0, key="edit_sale_qty")
@@ -2134,11 +2085,11 @@ elif page == "💰 Sales Entry":
                                              key="edit_sale_unit")
                     edit_rate = st.number_input("Rate per Unit", min_value=0.0, value=float(row['rate']) if pd.notna(row['rate']) else 0.0, step=0.01, key="edit_sale_rate")
                     edit_payment_days = st.number_input("Payment Terms (Days)", min_value=0, max_value=365, value=int(row['payment_terms_days']) if pd.notna(row['payment_terms_days']) else 60, step=1, key="edit_sale_payment_days")
-    
+                
                 if edit_qty and edit_rate:
                     amount = edit_qty * edit_rate
                     st.metric("Total Amount", f"₹{amount:,.2f}")
-    
+                
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.form_submit_button("💾 Save Changes", type="primary"):
@@ -2152,12 +2103,14 @@ elif page == "💰 Sales Entry":
                             new_amount = edit_qty * edit_rate
                             new_due_date = (edit_date + timedelta(days=edit_payment_days)).strftime('%Y-%m-%d')
                             
-                            # STEP 1: REVERSE THE OLD ENTRY COMPLETELY
+                            # STEP 1: REVERSE THE OLD ENTRY COMPLETELY (MIRRORING PURCHASE EDIT LOGIC)
                             if old_prod_cat == 'RM Product':
                                 # Delete the old movement record
                                 execute_query("DELETE FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'SALE'", (st.session_state.edit_id,))
                                 # Recalculate balances for the old product (removes the old qty from history)
-                                update_rm_inventory(old_product, 0, 'PURCHASE') 
+                                update_rm_inventory(old_product, 0, 'PURCHASE')
+                                # Reverse master totals manually since we deleted the movement
+                                execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
                             else:
                                 # Reverse FG Sale
                                 execute_query("UPDATE fg_inventory SET sold_qty = COALESCE(sold_qty, 0) - ? WHERE product_name = ?", (old_qty, old_product))
@@ -2167,30 +2120,27 @@ elif page == "💰 Sales Entry":
                                 WHERE product_name = ?
                                 """, (old_product,))
                             
-                            # STEP 2: UPDATE THE EXISTING TRANSACTION RECORD (NOT CREATE NEW)
+                            # STEP 2: UPDATE THE EXISTING TRANSACTION RECORD
                             execute_query('''UPDATE sales_transactions SET
                             challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
                             WHERE id=?''',
-                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party,edit_category, _category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
+                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, edit_category, edit_product_category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
                             new_due_date, st.session_state.edit_id))
                             
-                            # STEP 3: APPLY THE NEW ENTRY
-                                                        # STEP 3: APPLY THE NEW ENTRY (UPDATE EXISTING MOVEMENT RECORD INSTEAD OF INSERTING NEW)
-                            if _category == 'RM Product':
+                            # STEP 3: APPLY THE NEW ENTRY (INSERT NEW MOVEMENT RECORD LIKE PURCHASE DOES)
+                            if edit_product_category == 'RM Product':
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
                                 
-                                # UPDATE the existing movement record quantity instead of inserting a new one
-                                execute_query('''UPDATE rm_stock_movement 
-                                SET transaction_date=?, challan_no=?, product_name=?, qty=? 
-                                WHERE reference_id = ? AND transaction_type = 'SALE' ''',
-                                (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, edit_qty, st.session_state.edit_id))
+                                # Add NEW movement record for the edited quantity using SAME reference_id
+                                execute_query('''INSERT INTO rm_stock_movement
+                                (transaction_date, challan_no, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+                                VALUES (?, ?, ?, ?, ?, 0, 0, ?)''',
+                                (edit_date.strftime('%Y-%m-%d'), edit_challan, edit_product, 'SALE', edit_qty, st.session_state.edit_id))
                                 
-                                # Adjust Master Totals by difference since we updated the row directly
-                                qty_diff = edit_qty - old_qty
-                                if qty_diff != 0:
-                                     execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-
-                                # Recalculate Balances for the product (This will now pick up the UPDATED quantity in the movement table)
+                                # Update Master Totals
+                                execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (edit_qty, edit_product))
+                                
+                                # Recalculate Balances for the NEW product
                                 update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id, rate=edit_rate)
                             else:
                                 # FG Sale
@@ -2214,12 +2164,12 @@ elif page == "💰 Sales Entry":
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error updating sales entry: {str(e)}")
-    
                 with col2:
                     if st.form_submit_button("❌ Cancel"):
                         st.session_state.edit_mode = False
                         st.session_state.edit_id = None
                         st.rerun()
+
     st.markdown("### All Sales Entries")
     st.dataframe(df_all_sales, use_container_width=True)
     st.metric("Total Sales Value", f"₹{df_all_sales['amount'].sum():,.2f}")
