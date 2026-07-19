@@ -1798,7 +1798,7 @@ elif page == "🏭 Production Entry":
                             WHERE id=?''',
                             (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, edit_product, old_prod_cat, edit_qty, edit_unit, edit_description, st.session_state.edit_id))
                             
-                            # STEP 3: APPLY THE NEW ENTRY (UPDATE MOVEMENT RECORD INSTEAD OF INSERT)
+                            # STEP 3: APPLY THE NEW ENTRY (UPDATE MOVEMENT RECORD TO PRESERVE ID/ORDER)
                             if old_prod_cat == 'RM Product':
                                 # Ensure RM Inventory record exists
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
@@ -1807,7 +1807,7 @@ elif page == "🏭 Production Entry":
                                 existing_mov = fetch_data("SELECT id FROM rm_stock_movement WHERE reference_id = ? AND transaction_type = 'PURCHASE'", (st.session_state.edit_id,))
                                 
                                 if not existing_mov.empty:
-                                    # UPDATE EXISTING RECORD (Keeps same ID, preserves order)
+                                    # UPDATE EXISTING RECORD (Keeps same ID, preserves order for balance calc)
                                     execute_query('''UPDATE rm_stock_movement 
                                     SET transaction_date=?, challan_no=?, product_name=?, qty=? 
                                     WHERE reference_id = ? AND transaction_type = 'PURCHASE' ''',
