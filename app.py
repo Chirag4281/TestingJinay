@@ -2175,7 +2175,7 @@ elif page == "💰 Sales Entry":
                             execute_query('''UPDATE sales_transactions SET
                             challan_no=?, date=?, party_name=?, product_name=?, category=?, product_category=?, qty=?, unit=?, rate=?, amount=?, payment_terms_days=?, due_date=?
                             WHERE id=?''',
-                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party, , edit_category, _category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
+                            (edit_challan, edit_date.strftime('%Y-%m-%d'), edit_party,edit_category, _category, edit_qty, edit_unit, edit_rate, new_amount, edit_payment_days,
                             new_due_date, st.session_state.edit_id))
                             
                             # STEP 3: APPLY THE NEW ENTRY
