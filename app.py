@@ -2121,7 +2121,7 @@ elif page == "💰 Sales Entry":
                                               index=party_list_edit.index(row['party_name']) if row['party_name'] in party_list_edit else 0,
                                               key="edit_sale_party")
                 with col2:
-                     = st.selectbox("Product",
+                    edit_product  = st.selectbox("Product",
                                                 product_list_edit if product_list_edit else [row['product_name']],
                                                 index=product_list_edit.index(row['product_name']) if row['product_name'] in product_list_edit else 0,
                                                 key="edit_sale_product")
