@@ -2625,23 +2625,28 @@ elif page == "📈 Inventory":
     with tab1:
         st.markdown("### RM (Raw Material) Inventory Summary")
         # Fetch RM Inventory joined with product_master to get real-time Category
+        # UPDATED QUERY: Added production_register to find Last Supplier/Buyer
         df_rm_inv = fetch_data("""
-        SELECT 
-            i.product_name, 
-            COALESCE(m.category, 'RM Product') as category,
-            i.opening_stock, 
-            i.total_purchased_qty, 
-            i.total_consumed_qty, 
-            i.closing_stock, 
-            COALESCE(i.rate, 0) as rate,
-            (SELECT pt.party_name FROM purchase_transactions pt 
-             JOIN rm_stock_movement rsm ON pt.id = rsm.reference_id 
-             WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'PURCHASE' 
-             ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_supplier,
-            (SELECT st.party_name FROM sales_transactions st 
-             JOIN rm_stock_movement rsm ON st.id = rsm.reference_id 
-             WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'SALE' 
-             ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_buyer
+        SELECT
+        i.product_name,
+        COALESCE(m.category, 'RM Product') as category,
+        i.opening_stock,
+        i.total_purchased_qty,
+        i.total_consumed_qty,
+        i.closing_stock,
+        COALESCE(i.rate, 0) as rate,
+        (SELECT pt.party_name FROM purchase_transactions pt
+        JOIN rm_stock_movement rsm ON pt.id = rsm.reference_id
+        WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'PURCHASE'
+        ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_supplier_purchase,
+        (SELECT pr.party_name FROM production_register pr
+        JOIN rm_stock_movement rsm ON pr.id = rsm.reference_id
+        WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'PURCHASE'
+        ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_supplier_production,
+        (SELECT st.party_name FROM sales_transactions st
+        JOIN rm_stock_movement rsm ON st.id = rsm.reference_id
+        WHERE rsm.product_name = i.product_name AND rsm.transaction_type = 'SALE'
+        ORDER BY rsm.transaction_date DESC, rsm.id DESC LIMIT 1) as last_buyer
         FROM rm_inventory i
         LEFT JOIN product_master m ON i.product_name = m.product_name
         ORDER BY i.product_name
@@ -2653,20 +2658,23 @@ elif page == "📈 Inventory":
             df_rm_inv['total_consumed_qty'] = pd.to_numeric(df_rm_inv['total_consumed_qty'], errors='coerce').fillna(0)
             df_rm_inv['rate'] = pd.to_numeric(df_rm_inv['rate'], errors='coerce').fillna(0)
             
+            # Combine Purchase and Production suppliers into one column
+            df_rm_inv['last_supplier'] = df_rm_inv['last_supplier_purchase'].combine_first(df_rm_inv['last_supplier_production'])
+            
             # Real-time correction of closing stock based on formula
             df_rm_inv['calculated_closing'] = df_rm_inv['opening_stock'] + df_rm_inv['total_purchased_qty'] - df_rm_inv['total_consumed_qty']
             
             col1, col2, col3 = st.columns(3)
             with col1: st.metric("Total RM Products", len(df_rm_inv))
             with col2: st.metric("Total Stock Value", f"₹{(df_rm_inv['closing_stock'] * df_rm_inv['rate']).sum():,.2f}")
-            with col3: st.metric("Total Purchased", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
+            with col3: st.metric("Total Purchased/Produced", f"{df_rm_inv['total_purchased_qty'].sum():,.0f}")
             
             # Prepare display dataframe with Category included
             display_df = df_rm_inv[['product_name', 'category', 'opening_stock', 'total_purchased_qty', 'total_consumed_qty', 'closing_stock', 'rate', 'last_supplier', 'last_buyer']].copy()
             display_df.rename(columns={
-                'category': 'Product Category',
-                'last_supplier': 'Last Supplier (Party)', 
-                'last_buyer': 'Last Buyer (Party)'
+            'category': 'Product Category',
+            'last_supplier': 'Last Source (Party/Moulder)',
+            'last_buyer': 'Last Buyer (Party)'
             }, inplace=True)
             
             st.dataframe(display_df, use_container_width=True)
@@ -2675,13 +2683,11 @@ elif page == "📈 Inventory":
             col1, col2 = st.columns(2)
             with col1: rm_product = st.selectbox("Select RM Product", df_rm_inv['product_name'].tolist(), key="rm_product_select")
             with col2: new_opening = st.number_input("New Opening Stock", min_value=0.0, step=1.0, key="rm_opening_stock")
-            
             if st.button("Update Opening Stock", type="primary", key="update_rm_opening"):
                 if rm_product:
                     execute_query("UPDATE rm_inventory SET opening_stock = ? WHERE product_name = ?", (new_opening, rm_product))
                     # Trigger recalculation of closing stock via movement history
                     update_rm_inventory(rm_product, 0, 'PURCHASE') # Passing 0 qty triggers full recalc
-                    
                     st.success("✅ Opening stock updated!")
                     st.rerun()
         else:
