@@ -1826,6 +1826,7 @@ elif page == "🏭 Production Entry":
                             
                             # STEP 3: APPLY THE NEW ENTRY
                             # STEP 3: APPLY THE NEW ENTRY (UPDATE EXISTING MOVEMENT RECORD INSTEAD OF INSERTING NEW)
+                                            # STEP 3: APPLY THE NEW ENTRY (UPDATE EXISTING MOVEMENT RECORD INSTEAD OF INSERTING NEW)
                             if old_prod_cat == 'RM Product':
                                 # Ensure RM Inventory record exists
                                 execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (edit_product,))
@@ -1838,21 +1839,16 @@ elif page == "🏭 Production Entry":
                                 
                                 # Update Master Totals: Since we updated the row, we don't add again. 
                                 # However, total_purchased_qty in master might need adjustment if product changed.
-                                # For simplicity and consistency with the recalculation logic, we rely on update_rm_inventory 
-                                # to fix the closing stock, but we must ensure total_purchased_qty reflects the current state.
-                                # The safest way is to recalculate total_purchased_qty from scratch for this product or adjust diff.
-                                # Given the existing structure, let's adjust the master total by the difference.
+                                # The safest way is to adjust by the difference.
                                 qty_diff = edit_qty - old_qty
                                 if qty_diff != 0:
                                      execute_query("UPDATE rm_inventory SET total_purchased_qty = COALESCE(total_purchased_qty, 0) + ? WHERE product_name = ?", (qty_diff, edit_product))
-                            
+            
                                 # Recalculate Balances Realtime (This will now pick up the UPDATED quantity in the movement table)
                                 update_rm_inventory(edit_product, 0, 'PURCHASE', edit_date.strftime('%Y-%m-%d'), edit_challan, st.session_state.edit_id)
                             else:
                                 # FG Production
                                 execute_query("INSERT OR IGNORE INTO fg_inventory (product_name, opening_stock, produced_qty, sold_qty, rejected_qty, purchased_qty, closing_stock) VALUES (?, 0, 0, 0, 0, 0, 0)", (edit_product,))
-                                # Note: update_fg_inventory adds to the total. Since we reversed the old one in Step 1, 
-                                # adding the new one here is correct.
                                 update_fg_inventory(edit_product, edit_qty, 'PRODUCE')
                             st.success("✅ Production entry updated successfully!")
                             st.session_state.edit_mode = False
