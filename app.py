@@ -798,283 +798,414 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* Main Background */
+    .stApp {
+        background: #0a0a0a !important;
+    }
     .main-header {
         font-size: 2.5rem;
         font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        padding: 1rem;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        text-align: center;
+        padding: 1rem;
         margin-bottom: 2rem;
     }
+    
+    /* All Text */
+    .stMarkdown, .stText, .stCaption, label, .stSelectbox label, .stNumberInput label, .stTextInput label, .stDateInput label, .stTextArea label {
+        color: #ffffff !important;
+    }
+    
+    /* Headers */
+    h1, h2, h3, h4, h5, h6 {
+        color: #ffffff !important;
+    }
+    
+    /* Metrics */
+    div[data-testid="stMetric"] {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%) !important;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid rgba(102, 126, 234, 0.3);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+    }
+    div[data-testid="stMetric"]:hover {
+        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+        transform: translateY(-2px);
+        transition: all 0.3s ease;
+        border-color: #667eea;
+    }
+    div[data-testid="stMetric"] label {
+        color: #a0aec0 !important;
+        font-weight: 500 !important;
+    }
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        color: #ffffff !important;
+        font-weight: 700 !important;
+    }
+    
+    /* Forms */
+    div[data-testid="stForm"] {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%) !important;
+        padding: 25px;
+        border-radius: 15px;
+        border: 1px solid rgba(102, 126, 234, 0.2);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    div[data-testid="stForm"]:hover {
+        border-color: rgba(102, 126, 234, 0.5);
+        box-shadow: 0 4px 30px rgba(0,0,0,0.7);
+        transition: all 0.3s ease;
+    }
+    
+    /* Input Fields */
+    div[data-testid="stSelectbox"] > div, 
+    div[data-testid="stTextInput"] > div,
+    div[data-testid="stNumberInput"] > div,
+    div[data-testid="stTextArea"] > div,
+    div[data-testid="stDateInput"] > div {
+        background: #1a1a2e !important;
+        border-radius: 8px;
+        border: 1px solid #2d3748 !important;
+        color: #ffffff !important;
+    }
+    div[data-testid="stSelectbox"] > div:hover,
+    div[data-testid="stTextInput"] > div:hover,
+    div[data-testid="stNumberInput"] > div:hover,
+    div[data-testid="stTextArea"] > div:hover,
+    div[data-testid="stDateInput"] > div:hover {
+        border-color: #667eea !important;
+        box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+    }
+    div[data-testid="stSelectbox"] > div input,
+    div[data-testid="stTextInput"] > div input,
+    div[data-testid="stNumberInput"] > div input,
+    div[data-testid="stTextArea"] > div textarea,
+    div[data-testid="stDateInput"] > div input {
+        color: #ffffff !important;
+        background: transparent !important;
+    }
+    div[data-testid="stSelectbox"] > div div {
+        color: #ffffff !important;
+        background: #1a1a2e !important;
+    }
+    
+    /* Tables */
+    .stDataFrame {
+        background: #0a0a0a !important;
+        border-radius: 10px !important;
+        border: 1px solid #2d3748 !important;
+    }
+    .stDataFrame table {
+        background: #0a0a0a !important;
+        color: #ffffff !important;
+    }
+    .stDataFrame thead tr th {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        color: #ffffff !important;
+        font-weight: 600 !important;
+        padding: 12px !important;
+        border-bottom: 2px solid #764ba2 !important;
+    }
+    .stDataFrame tbody tr {
+        background: #1a1a2e !important;
+        color: #e2e8f0 !important;
+        border-bottom: 1px solid #2d3748 !important;
+    }
+    .stDataFrame tbody tr:nth-child(even) {
+        background: #16213e !important;
+    }
+    .stDataFrame tbody tr:hover {
+        background: #2d3748 !important;
+        transition: background 0.2s ease;
+        cursor: pointer;
+    }
+    .stDataFrame tbody td {
+        color: #e2e8f0 !important;
+        padding: 10px !important;
+    }
+    
+    /* Alerts */
+    .stAlert {
+        border-radius: 10px !important;
+        border-left: 5px solid !important;
+        background: #1a1a2e !important;
+        color: #ffffff !important;
+    }
+    .stSuccess {
+        border-left-color: #48bb78 !important;
+        background: linear-gradient(135deg, #1a2e1a 0%, #0d1f0d 100%) !important;
+        border: 1px solid #48bb78 !important;
+        color: #ffffff !important;
+    }
+    .stError {
+        border-left-color: #fc8181 !important;
+        background: linear-gradient(135deg, #2e1a1a 0%, #1f0d0d 100%) !important;
+        border: 1px solid #fc8181 !important;
+        color: #ffffff !important;
+    }
+    .stWarning {
+        border-left-color: #ed8936 !important;
+        background: linear-gradient(135deg, #2e2a1a 0%, #1f1d0d 100%) !important;
+        border: 1px solid #ed8936 !important;
+        color: #ffffff !important;
+    }
+    .stInfo {
+        border-left-color: #4299e1 !important;
+        background: linear-gradient(135deg, #1a2a3e 0%, #0d1f2f 100%) !important;
+        border: 1px solid #4299e1 !important;
+        color: #ffffff !important;
+    }
+    
+    /* Buttons */
+    .stButton > button {
+        width: 100%;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        color: #ffffff !important;
+        border: none !important;
+        padding: 10px 20px !important;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        transition: all 0.3s ease;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 25px rgba(102, 126, 234, 0.5);
+    }
+    .stButton > button:active {
+        transform: translateY(0);
+    }
+    .stButton > button:focus {
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.5);
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: #1a1a2e !important;
+        padding: 8px;
+        border-radius: 12px;
+        border: 1px solid #2d3748 !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background: transparent !important;
+        border-radius: 8px;
+        padding: 8px 16px;
+        color: #a0aec0 !important;
+        font-weight: 500;
+        transition: all 0.3s ease;
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background: #2d3748 !important;
+        color: #ffffff !important;
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"]:hover {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        color: #ffffff !important;
+    }
+    
+    /* Expanders */
+    div[data-testid="stExpander"] {
+        background: #1a1a2e !important;
+        border-radius: 10px;
+        border: 1px solid #2d3748 !important;
+        color: #ffffff !important;
+    }
+    div[data-testid="stExpander"]:hover {
+        border-color: #667eea !important;
+    }
+    div[data-testid="stExpander"] summary {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%) !important;
+        border-radius: 10px;
+        padding: 12px;
+        font-weight: 600;
+        color: #ffffff !important;
+    }
+    div[data-testid="stExpander"] summary:hover {
+        background: linear-gradient(135deg, #2d3748 0%, #1a1a2e 100%) !important;
+    }
+    div[data-testid="stExpander"] div {
+        color: #e2e8f0 !important;
+    }
+    
+    /* Radio Buttons */
+    .stRadio > div {
+        background: #1a1a2e !important;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #2d3748 !important;
+    }
+    .stRadio label {
+        color: #e2e8f0 !important;
+    }
+    .stRadio label span {
+        color: #e2e8f0 !important;
+    }
+    
+    /* Checkboxes */
+    .stCheckbox label {
+        color: #e2e8f0 !important;
+    }
+    
+    /* Sidebar */
+    .css-1d391kg, .css-1r6slb0, .css-1a32fsj, .css-17eq0hr, .css-1qw3mlq, .css-1aehpv6, .css-1v0mbdj, .css-1pahdxg, .css-1sj6t5s, .css-1l4vz2s, .css-1y4p8pa, .css-1yk2r1w, .css-1wh2j7h, .css-1fv8s86 {
+        background: #0a0a0a !important;
+    }
+    .css-1d391kg {
+        background: #0a0a0a !important;
+        border-right: 1px solid #2d3748 !important;
+    }
+    .css-1d391kg .stMarkdown, .css-1d391kg .stText, .css-1d391kg label {
+        color: #ffffff !important;
+    }
+    
+    /* Metric Cards (for dashboard) */
     .metric-card {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%) !important;
         padding: 1.5rem;
         border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         text-align: center;
         border-left: 5px solid #667eea;
+        color: #ffffff !important;
     }
     .metric-value {
         font-size: 2rem;
         font-weight: bold;
-        color: #667eea;
+        color: #667eea !important;
     }
     .metric-label {
         font-size: 0.9rem;
-        color: #666;
+        color: #a0aec0 !important;
         margin-top: 0.5rem;
     }
-    .edit-btn {
-        background-color: #4CAF50;
-        color: white;
-        border: none;
-        padding: 5px 10px;
-        margin: 2px;
-        border-radius: 3px;
-        cursor: pointer;
+    
+    /* Charts */
+    .stChart, .stLineChart, .stBarChart {
+        background: #1a1a2e !important;
+        border-radius: 10px;
+        padding: 15px;
+        border: 1px solid #2d3748 !important;
     }
-    .delete-btn {
-        background-color: #f44336;
-        color: white;
-        border: none;
-        padding: 5px 10px;
-        margin: 2px;
-        border-radius: 3px;
-        cursor: pointer;
-    }
+    
+    /* Overdue Alert */
     .overdue-alert {
-        background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
-        border-left: 5px solid #f44336;
+        background: linear-gradient(135deg, #2e1a1a 0%, #1f0d0d 100%) !important;
+        border-left: 5px solid #f44336 !important;
         padding: 10px;
         margin: 5px 0;
-        border-radius: 3px;
+        border-radius: 8px;
+        color: #ffffff !important;
+        border: 1px solid #f44336 !important;
     }
-    .stButton > button {
-        width: 100%;
-        border-radius: 5px;
-        font-weight: 500;
+    .overdue-alert strong {
+        color: #fc8181 !important;
     }
-    .stButton > button:focus {
-        box-shadow: 0 0 0 2px #667eea;
+    
+    /* File Uploader */
+    .stFileUploader > div {
+        background: #1a1a2e !important;
+        border: 2px dashed #2d3748 !important;
+        border-radius: 10px !important;
+        color: #ffffff !important;
     }
-    div[data-testid="stMetric"] {
-        background: linear-gradient(135deg, #e8f0fe 0%, #d4e0f7 100%);
-        padding: 15px;
+    .stFileUploader > div:hover {
+        border-color: #667eea !important;
+    }
+    .stFileUploader label {
+        color: #e2e8f0 !important;
+    }
+    
+    /* Selectbox dropdown */
+    .stSelectbox > div > div {
+        background: #1a1a2e !important;
+        color: #ffffff !important;
+    }
+    .stSelectbox > div > div > div {
+        color: #ffffff !important;
+    }
+    .stSelectbox > div > div > div > div {
+        background: #1a1a2e !important;
+        color: #ffffff !important;
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #0a0a0a;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         border-radius: 10px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        border: 1px solid rgba(102, 126, 234, 0.2);
     }
-    div[data-testid="stMetric"]:hover {
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        transform: translateY(-2px);
+    ::-webkit-scrollbar-thumb:hover {
+        background: #764ba2;
+    }
+    
+    /* Sidebar Navigation */
+    .stRadio > div {
+        background: transparent !important;
+        border: none !important;
+        padding: 0 !important;
+    }
+    .stRadio label {
+        color: #a0aec0 !important;
+        padding: 8px 12px !important;
+        border-radius: 8px !important;
         transition: all 0.3s ease;
     }
-    div[data-testid="stMetric"] label {
-        color: #4a5568 !important;
-        font-weight: 600 !important;
+    .stRadio label:hover {
+        background: #2d3748 !important;
+        color: #ffffff !important;
     }
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
-        color: #2d3748 !important;
-        font-weight: 700 !important;
+    .stRadio label[data-baseweb="radio"] {
+        background: transparent !important;
     }
-    .stDataFrame {
-        background: #f8fafc !important;
+    .stRadio div[role="radiogroup"] {
+        background: #1a1a2e !important;
+        padding: 8px !important;
         border-radius: 10px !important;
-        border: 1px solid #e2e8f0 !important;
+        border: 1px solid #2d3748 !important;
     }
-    .stDataFrame table {
-        background: #f8fafc !important;
+    .stRadio div[role="radiogroup"] label {
+        color: #e2e8f0 !important;
     }
-    .stDataFrame thead tr th {
+    .stRadio div[role="radiogroup"] label[data-selected="true"] {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        color: white !important;
-        font-weight: 600 !important;
-        padding: 12px !important;
+        color: #ffffff !important;
     }
-    .stDataFrame tbody tr {
-        background: #ffffff !important;
+    
+    /* Select All text */
+    .stMultiSelect > div {
+        background: #1a1a2e !important;
+        color: #ffffff !important;
+        border: 1px solid #2d3748 !important;
+        border-radius: 8px !important;
     }
-    .stDataFrame tbody tr:nth-child(even) {
-        background: #f8fafc !important;
+    .stMultiSelect > div:hover {
+        border-color: #667eea !important;
     }
-    .stDataFrame tbody tr:hover {
-        background: #e8f0fe !important;
-        transition: background 0.2s ease;
+    
+    /* Miscellaneous */
+    hr {
+        border-color: #2d3748 !important;
     }
-    .stAlert {
-        border-radius: 10px !important;
-        border-left: 5px solid !important;
+    .css-1aumxhk, .css-18e3th9 {
+        background: #0a0a0a !important;
     }
-    .stAlert[data-testid="stAlert"] {
-        background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%) !important;
-    }
-    .stAlert[data-testid="stAlert"]:has(.stAlertIcon) {
-        border-left-color: #667eea !important;
-    }
-    div[data-testid="stForm"] {
-        background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%);
-        padding: 25px;
-        border-radius: 15px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    }
-    div[data-testid="stForm"]:hover {
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        transition: all 0.3s ease;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: #f8fafc;
-        padding: 8px;
-        border-radius: 12px;
-        border: 1px solid #e2e8f0;
-    }
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        border-radius: 8px;
-        padding: 8px 16px;
-        color: #4a5568;
-        font-weight: 500;
-    }
-    .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-    }
-    .stTabs [data-baseweb="tab"]:hover {
-        background: #e2e8f0;
-    }
-    .stTabs [data-baseweb="tab"][aria-selected="true"]:hover {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-    }
-    div[data-testid="stSelectbox"] > div {
-        background: white;
-        border-radius: 8px;
-        border: 1px solid #e2e8f0;
-    }
-    div[data-testid="stSelectbox"] > div:hover {
-        border-color: #667eea;
-    }
-    div[data-testid="stTextInput"] > div {
-        background: white;
-        border-radius: 8px;
-        border: 1px solid #e2e8f0;
-    }
-    div[data-testid="stTextInput"] > div:hover {
-        border-color: #667eea;
-    }
-    div[data-testid="stNumberInput"] > div {
-        background: white;
-        border-radius: 8px;
-        border: 1px solid #e2e8f0;
-    }
-    div[data-testid="stNumberInput"] > div:hover {
-        border-color: #667eea;
-    }
-    div[data-testid="stTextArea"] > div {
-        background: white;
-        border-radius: 8px;
-        border: 1px solid #e2e8f0;
-    }
-    div[data-testid="stTextArea"] > div:hover {
-        border-color: #667eea;
-    }
-    div[data-testid="stDateInput"] > div {
-        background: white;
-        border-radius: 8px;
-        border: 1px solid #e2e8f0;
-    }
-    div[data-testid="stDateInput"] > div:hover {
-        border-color: #667eea;
-    }
-    .stSuccess {
-        background: linear-gradient(135deg, #e6f7e6 0%, #b8e6b8 100%) !important;
-        border-left-color: #48bb78 !important;
-    }
-    .stError {
-        background: linear-gradient(135deg, #fce4e4 0%, #f8d0d0 100%) !important;
-        border-left-color: #fc8181 !important;
-    }
-    .stWarning {
-        background: linear-gradient(135deg, #fff5e6 0%, #ffe8cc 100%) !important;
-        border-left-color: #ed8936 !important;
-    }
-    .stInfo {
-        background: linear-gradient(135deg, #e6f0fa 0%, #cce0f5 100%) !important;
-        border-left-color: #4299e1 !important;
-    }
-    div[data-testid="stExpander"] {
-        background: #f8fafc;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
-    }
-    div[data-testid="stExpander"]:hover {
-        border-color: #667eea;
-    }
-    div[data-testid="stExpander"] summary {
-        background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%);
-        border-radius: 10px;
-        padding: 12px;
-        font-weight: 600;
-        color: #2d3748;
-    }
-    div[data-testid="stExpander"] summary:hover {
-        background: linear-gradient(135deg, #edf2f7 0%, #e2e8f0 100%);
-    }
-    div[data-testid="stDataFrame"] {
-        border-radius: 10px !important;
-        overflow: hidden !important;
-    }
-    .css-1aumxhk {
-        background: #f8fafc !important;
-    }
-    .css-18e3th9 {
-        background: #f8fafc !important;
-    }
-    .css-1d391kg {
-        background: #f8fafc !important;
-    }
-    .css-1r6slb0 {
-        background: #f8fafc !important;
-    }
-    .css-1a32fsj {
-        background: #f8fafc !important;
-    }
-    .css-17eq0hr {
-        background: #f8fafc !important;
-    }
-    .css-1qw3mlq {
-        background: #f8fafc !important;
-    }
-    .css-1aehpv6 {
-        background: #f8fafc !important;
-    }
-    .css-1v0mbdj {
-        background: #f8fafc !important;
-    }
-    .css-1pahdxg {
-        background: #f8fafc !important;
-    }
-    .css-1sj6t5s {
-        background: #f8fafc !important;
-    }
-    .css-1l4vz2s {
-        background: #f8fafc !important;
-    }
-    .css-1y4p8pa {
-        background: #f8fafc !important;
-    }
-    .css-1yk2r1w {
-        background: #f8fafc !important;
-    }
-    .css-1wh2j7h {
-        background: #f8fafc !important;
-    }
-    .css-1fv8s86 {
-        background: #f8fafc !important;
+    .st-cq, .st-cr, .st-cs, .st-ct, .st-cu, .st-cv, .st-cw, .st-cx, .st-cy, .st-cz {
+        color: #ffffff !important;
     }
 </style>
 """, unsafe_allow_html=True)
