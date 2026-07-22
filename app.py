@@ -1501,6 +1501,7 @@ elif page == "📦 Masters":
 
         # =================== HARDCODED BOM DATA INITIALIZATION ===================
         # =================== HARDCODED BOM DATA INITIALIZATION ===================
+        # =================== HARDCODED BOM DATA INITIALIZATION ===================
         BOM_DATA = {
             # 5A Series
             "5A SSC with JB": {
@@ -1511,7 +1512,7 @@ elif page == "📦 Masters":
             "5A 8x1 with JB": {
                 "5A STC": 2, "5A DTC": 2, "5A W/S": 4, "5A C/C": 2,
                 "5A Action": 2, "5A Earting Pin": 2, "5A Live Pin": 2,
-                "5A Threading Patti": 2, "5/15A Bulb": 2
+                "5A Threading Patti": 4, "5/15A Bulb": 2
             },
             "5A 10x1 with JB": {
                 "5A STC": 2, "5A DTC": 2, "5A W/S": 4, "5A C/C": 2,
@@ -1590,7 +1591,6 @@ elif page == "📦 Masters":
                 "5x1 Bulb": 1, "Kitkat Part Set": 1
             }
         }
-        
         # Initialize BOM if not already done
         if 'bom_initialized' not in st.session_state:
             existing_bom = fetch_data("SELECT COUNT(*) as count FROM bom_master")
@@ -1748,6 +1748,41 @@ elif page == "📦 Masters":
         else:
             st.info("No BOM entries defined yet. Please add manually above.")
 
+def check_rm_availability_for_fg(fg_product, fg_qty):
+    """
+    Check if all required RM materials are available for a given FG product and quantity.
+    Returns (is_available, list_of_shortages)
+    """
+    bom_items = fetch_data("""
+        SELECT rm_product, required_qty
+        FROM bom_master
+        WHERE fg_product = ?
+    """, (fg_product,))
+    
+    if bom_items.empty:
+        return True, []  # No BOM defined, allow sale
+    
+    shortages = []
+    is_available = True
+    
+    for _, bom_row in bom_items.iterrows():
+        rm_product = bom_row['rm_product']
+        required_qty = bom_row['required_qty'] * fg_qty
+        
+        # Get current stock
+        stock_df = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_product,))
+        available_stock = float(stock_df['closing_stock'].iloc[0]) if not stock_df.empty and pd.notna(stock_df['closing_stock'].iloc[0]) else 0.0
+        
+        if available_stock < required_qty:
+            is_available = False
+            shortages.append({
+                'rm_product': rm_product,
+                'required': required_qty,
+                'available': available_stock,
+                'shortage': required_qty - available_stock
+            })
+    
+    return is_available, shortages
 # ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
     st.subheader("🛒 Purchase Entry")
@@ -2359,66 +2394,107 @@ elif page == "💰 Sales Entry":
                     if not existing_challan.empty:
                         st.error(f"❌ Error: Challan No '{challan_no}' already exists! Please use a unique Challan Number.")
                     else:
+                        # Check stock availability for FG products
+                        if actual_prod_cat in ['FG Product', 'Moulding Product']:
+                            # Check FG stock
+                            df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
+                            available_fg = float(df_stock['closing_stock'].iloc[0]) if not df_stock.empty and pd.notna(df_stock['closing_stock'].iloc[0]) else 0.0
+                            
+                            if available_fg < qty:
+                                st.warning(f"⚠️ Insufficient FG stock! Available: {available_fg:.2f} {unit}, Requested: {qty:.2f} {unit}")
+                                st.stop()
+                            
+                            # Check RM availability for FG products
+                            is_available, shortages = check_rm_availability_for_fg(product, qty)
+                            
+                            if not is_available:
+                                st.error("❌ Cannot sell this FG product due to insufficient RM stock!")
+                                st.markdown("**Required RM materials shortage:**")
+                                shortage_df = pd.DataFrame(shortages)
+                                shortage_df.columns = ['RM Product', 'Required Qty', 'Available Qty', 'Shortage Qty']
+                                st.dataframe(shortage_df, use_container_width=True)
+                                st.stop()
+                        
+                        # Continue with existing sale logic
                         available = 0.0
                         if actual_prod_cat == 'RM Product':
                             df_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
                             if not df_stock.empty:
                                 val = df_stock['closing_stock'].iloc[0]
                                 available = float(val) if pd.notna(val) else 0.0
-                        else:
-                            df_stock = fetch_data("SELECT closing_stock FROM fg_inventory WHERE product_name = ?", (product,))
-                            if not df_stock.empty:
-                                val = df_stock['closing_stock'].iloc[0]
-                                available = float(val) if pd.notna(val) else 0.0
+                            
+                            if available < qty:
+                                st.warning(f"⚠️ Insufficient RM stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
+                                st.stop()
                         
-                        if available < qty:
-                            st.warning(f"⚠️ Insufficient stock! Available: {available:.2f} {unit}, Requested: {qty:.2f} {unit}")
-                        else:
-                            sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
-                            due_date = sale_date_dt + timedelta(days=payment_days)
-                            sale_amount = qty * rate
-                            
-                            sale_id = execute_query('''INSERT INTO sales_transactions
-                            (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                            (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
-                            
-                            try:
-                                if actual_prod_cat == 'RM Product':
-                                    execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
-                                    current_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
-                                    if not current_stock.empty and float(current_stock['closing_stock'].iloc[0]) < qty:
-                                        raise Exception(f"Insufficient RM Stock! Available: {current_stock['closing_stock'].iloc[0]}, Requested: {qty}")
-                                    
-                                    execute_query('''INSERT INTO rm_stock_movement
-                                    (transaction_date, challan_no, party_name, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)''',
-                                    (sales_date.strftime('%Y-%m-%d'), challan_no, party, product, 'SALE', qty, sale_id))
-                                    execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
-                                    update_rm_inventory(product, 0, 'PURCHASE', sales_date.strftime('%Y-%m-%d'), challan_no, sale_id, rate=rate, party_name=party)
-                                else:
-                                    execute_query('''INSERT INTO fg_stock_movement
-                                    (transaction_date, challan_no, party_name, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)''',
-                                    (sales_date.strftime('%Y-%m-%d'), challan_no, party, product, 'SALE', qty, sale_id))
-                                    update_fg_inventory(product, 0, 'SALE')
+                        sale_date_dt = sales_date if isinstance(sales_date, datetime) else datetime.combine(sales_date, datetime.min.time())
+                        due_date = sale_date_dt + timedelta(days=payment_days)
+                        sale_amount = qty * rate
+                        
+                        sale_id = execute_query('''INSERT INTO sales_transactions
+                        (challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (challan_no, sales_date.strftime('%Y-%m-%d'), party, product, category, actual_prod_cat, qty, unit, rate, sale_amount, payment_days, due_date.strftime('%Y-%m-%d')))
+                        
+                        try:
+                            if actual_prod_cat == 'RM Product':
+                                execute_query("INSERT OR IGNORE INTO rm_inventory (product_name, opening_stock, total_purchased_qty, total_consumed_qty, closing_stock) VALUES (?, 0, 0, 0, 0)", (product,))
+                                current_stock = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (product,))
+                                if not current_stock.empty and float(current_stock['closing_stock'].iloc[0]) < qty:
+                                    raise Exception(f"Insufficient RM Stock! Available: {current_stock['closing_stock'].iloc[0]}, Requested: {qty}")
                                 
-                                if actual_prod_cat != 'RM Product':
-                                    consume_rm_for_fg_sale(product, qty, sales_date.strftime('%Y-%m-%d'), challan_no, sale_id)
+                                execute_query('''INSERT INTO rm_stock_movement
+                                (transaction_date, challan_no, party_name, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+                                VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)''',
+                                (sales_date.strftime('%Y-%m-%d'), challan_no, party, product, 'SALE', qty, sale_id))
+                                execute_query("UPDATE rm_inventory SET total_consumed_qty = COALESCE(total_consumed_qty, 0) + ? WHERE product_name = ?", (qty, product))
+                                update_rm_inventory(product, 0, 'PURCHASE', sales_date.strftime('%Y-%m-%d'), challan_no, sale_id, rate=rate, party_name=party)
+                            else:
+                                # Deduct FG stock
+                                execute_query('''INSERT INTO fg_stock_movement
+                                (transaction_date, challan_no, party_name, product_name, transaction_type, qty, opening_balance, closing_balance, reference_id)
+                                VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)''',
+                                (sales_date.strftime('%Y-%m-%d'), challan_no, party, product, 'SALE', qty, sale_id))
+                                update_fg_inventory(product, 0, 'SALE')
+                            
+                            # Consume RM materials for FG product sale (if applicable)
+                            if actual_prod_cat in ['FG Product', 'Moulding Product']:
+                                # Get BOM items and consume RM stock
+                                bom_items = fetch_data("""
+                                    SELECT rm_product, required_qty
+                                    FROM bom_master
+                                    WHERE fg_product = ?
+                                """, (product,))
                                 
-                            except Exception as inv_err:
-                                st.warning(f"⚠️ Inventory Warning: {str(inv_err)}. Sale entry saved, but inventory may be negative/unadjusted.")
+                                if not bom_items.empty:
+                                    for _, bom_row in bom_items.iterrows():
+                                        rm_product = bom_row['rm_product']
+                                        rm_qty_needed = bom_row['required_qty'] * qty
+                                        
+                                        # Check RM stock again (double-check)
+                                        rm_check = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_product,))
+                                        if not rm_check.empty:
+                                            available_rm = rm_check['closing_stock'].iloc[0]
+                                            if available_rm >= rm_qty_needed:
+                                                # Consume RM stock
+                                                update_rm_inventory(rm_product, rm_qty_needed, 'CONSUMPTION', 
+                                                                   sales_date.strftime('%Y-%m-%d'), challan_no, sale_id, 
+                                                                   party_name=party)
+                                            else:
+                                                st.warning(f"⚠️ Not enough RM stock for {rm_product}. Required: {rm_qty_needed}, Available: {available_rm}")
                             
-                            create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
-                            
-                            st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
-                            st.balloons()
-                            st.rerun()
+                        except Exception as inv_err:
+                            st.warning(f"⚠️ Inventory Warning: {str(inv_err)}. Sale entry saved, but inventory may be negative/unadjusted.")
+                        
+                        create_receivable_entry(party, challan_no, sales_date.strftime('%Y-%m-%d'), sale_amount, payment_days)
+                        
+                        st.success(f"✅ Sale entry saved successfully! Amount: ₹{sale_amount:,.2f}")
+                        st.balloons()
+                        st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
             else:
                 st.warning("Please fill all required fields")
-
     st.markdown("---")
     st.markdown("### 📋 Manage Sales Entries")
     df_all_sales = fetch_data("SELECT id, challan_no, date, party_name, product_name, category, product_category, qty, unit, rate, amount, payment_terms_days, due_date FROM sales_transactions ORDER BY date DESC")
@@ -3161,6 +3237,58 @@ elif page == "📈 Inventory":
 
     with tab4:
         st.markdown("### 🧮 FG to RM Material Requirement Calculator")
+            with tab4:
+        st.markdown("### 🧮 FG to RM Material Requirement Calculator")
+        
+        # Add BOM Check section
+        st.markdown("#### 📋 BOM Requirements Check")
+        st.caption("Check what RM materials are required for a specific FG product")
+        
+        col_bom1, col_bom2 = st.columns(2)
+        with col_bom1:
+            fg_check = st.selectbox("Select FG Product to Check", 
+                                   fg_product_list if fg_product_list else ["No FG products"],
+                                   key="bom_check_fg")
+        with col_bom2:
+            fg_qty_check = st.number_input("FG Quantity", min_value=0.0, step=1.0, value=1.0, key="bom_check_qty")
+        
+        if st.button("Check BOM Requirements", key="check_bom_btn"):
+            if fg_check and fg_check != "No FG products" and fg_qty_check > 0:
+                bom_items = fetch_data("""
+                    SELECT rm_product, required_qty
+                    FROM bom_master
+                    WHERE fg_product = ?
+                """, (fg_check,))
+                
+                if bom_items.empty:
+                    st.warning(f"⚠️ No BOM defined for {fg_check}")
+                else:
+                    is_available, shortages = check_rm_availability_for_fg(fg_check, fg_qty_check)
+                    
+                    # Show BOM requirements
+                    bom_display = []
+                    for _, row in bom_items.iterrows():
+                        rm_name = row['rm_product']
+                        required = row['required_qty'] * fg_qty_check
+                        stock_df = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_name,))
+                        available = float(stock_df['closing_stock'].iloc[0]) if not stock_df.empty and pd.notna(stock_df['closing_stock'].iloc[0]) else 0.0
+                        status = "✅" if available >= required else "❌"
+                        bom_display.append({
+                            "RM Product": rm_name,
+                            "Required Qty": required,
+                            "Available Qty": available,
+                            "Status": status
+                        })
+                    
+                    df_bom_check = pd.DataFrame(bom_display)
+                    st.dataframe(df_bom_check, use_container_width=True)
+                    
+                    if is_available:
+                        st.success(f"✅ All RM materials available for {fg_qty_check} units of {fg_check}")
+                    else:
+                        st.error(f"❌ Insufficient RM materials for {fg_qty_check} units of {fg_check}")
+                        for s in shortages:
+                            st.warning(f"⚠️ {s['rm_product']}: Need {s['required']:.2f}, Available: {s['available']:.2f}, Shortage: {s['shortage']:.2f}")
         st.markdown("---")
         st.markdown("#### 📊 Sales-Based RM Requirements (Auto-Calculated from Sales)")
         st.info("💡 This section automatically calculates RM requirements based on actual FG product sales.")
