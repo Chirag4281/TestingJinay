@@ -3237,13 +3237,16 @@ elif page == "📈 Inventory":
 
     with tab4:
         st.markdown("### 🧮 FG to RM Material Requirement Calculator")
+        
+        # Get FG products list first
         df_fg_products = fetch_data("""
         SELECT product_name FROM product_master
         WHERE category IN ('FG Product', 'Moulding Product')
         ORDER BY product_name
         """)
         fg_product_list = df_fg_products['product_name'].tolist() if not df_fg_products.empty else []
-        # Add BOM Check section
+        
+        # BOM Requirements Check Section
         st.markdown("#### 📋 BOM Requirements Check")
         st.caption("Check what RM materials are required for a specific FG product")
         
@@ -3278,8 +3281,8 @@ elif page == "📈 Inventory":
                         status = "✅" if available >= required else "❌"
                         bom_display.append({
                             "RM Product": rm_name,
-                            "Required Qty": required,
-                            "Available Qty": available,
+                            "Required Qty": round(required, 2),
+                            "Available Qty": round(available, 2),
                             "Status": status
                         })
                     
@@ -3292,6 +3295,7 @@ elif page == "📈 Inventory":
                         st.error(f"❌ Insufficient RM materials for {fg_qty_check} units of {fg_check}")
                         for s in shortages:
                             st.warning(f"⚠️ {s['rm_product']}: Need {s['required']:.2f}, Available: {s['available']:.2f}, Shortage: {s['shortage']:.2f}")
+
         st.markdown("---")
         st.markdown("#### 📊 Sales-Based RM Requirements (Auto-Calculated from Sales)")
         st.info("💡 This section automatically calculates RM requirements based on actual FG product sales.")
@@ -3353,6 +3357,7 @@ elif page == "📈 Inventory":
                             'rm_needed': rm_total_needed
                         })
 
+            # CRITICAL: Only proceed if we have requirements and BOM exists for sales
             if sales_rm_requirements and has_bom_for_sales:
                 sales_calc_rows = []
                 has_shortage = False
@@ -3409,7 +3414,7 @@ elif page == "📈 Inventory":
                     shortage_count = len(sales_calc_df[sales_calc_df['Status'] == "❌ SHORTAGE"]) if not sales_calc_df.empty else 0
                     st.metric("⚠️ Items in Shortage", shortage_count)
 
-                # CRITICAL FIX: Check if dataframe is empty before applying style
+                # CRITICAL FIX: Check if dataframe is NOT empty before applying style
                 if not sales_calc_df.empty:
                     def highlight_status_sales(val):
                         if val == "❌ SHORTAGE":
@@ -3521,13 +3526,6 @@ elif page == "📈 Inventory":
         st.markdown("---")
         st.markdown("#### 🧮 Manual FG to RM Calculator")
         st.info("💡 Select OR type any FG product name and enter the quantity to calculate all required Raw Materials based on BOM.")
-
-        df_fg_products = fetch_data("""
-        SELECT product_name FROM product_master
-        WHERE category IN ('FG Product', 'Moulding Product')
-        ORDER BY product_name
-        """)
-        fg_product_list = df_fg_products['product_name'].tolist() if not df_fg_products.empty else []
 
         fg_input_mode = st.radio("How do you want to enter the FG Product?",
                                  ["Select from List", "Type Manually (Any FG Name)"],
