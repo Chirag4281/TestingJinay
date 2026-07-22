@@ -3183,6 +3183,7 @@ elif page == "📈 Inventory":
             total_fg_qty = df_fg_sales['qty'].sum() if 'qty' in df_fg_sales.columns else 0.0
             
             sales_rm_requirements = {}
+            has_bom_for_sales = False
 
             for _, sale_row in df_fg_sales.iterrows():
                 fg_product = sale_row['product_name']
@@ -3195,6 +3196,7 @@ elif page == "📈 Inventory":
                 """, (fg_product,))
 
                 if not bom_items.empty:
+                    has_bom_for_sales = True
                     for _, bom_row in bom_items.iterrows():
                         rm_name = bom_row['rm_product']
                         rm_per_unit = float(bom_row['required_qty'])
@@ -3220,7 +3222,7 @@ elif page == "📈 Inventory":
                             'rm_needed': rm_total_needed
                         })
 
-            if sales_rm_requirements:
+            if sales_rm_requirements and has_bom_for_sales:
                 sales_calc_rows = []
                 has_shortage = False
                 total_rm_value = 0.0
@@ -3261,6 +3263,7 @@ elif page == "📈 Inventory":
                     })
                     total_rm_value += total_required * rate
 
+                # Create the dataframe
                 sales_calc_df = pd.DataFrame(sales_calc_rows)
                 
                 # Display metrics
@@ -3272,10 +3275,10 @@ elif page == "📈 Inventory":
                 with m3: 
                     st.metric("💰 Total Sales Value", f"₹{total_sales_amount:,.2f}")
                 with m4: 
-                    shortage_count = len(sales_calc_df[sales_calc_df['Status'] == "❌ SHORTAGE"])
-                    st.metric("⚠️ Items in Shortage", shortage_count if not sales_calc_df.empty else 0)
+                    shortage_count = len(sales_calc_df[sales_calc_df['Status'] == "❌ SHORTAGE"]) if not sales_calc_df.empty else 0
+                    st.metric("⚠️ Items in Shortage", shortage_count)
 
-                # Display the dataframe with styling - ONLY if not empty
+                # CRITICAL FIX: Check if dataframe is empty before applying style
                 if not sales_calc_df.empty:
                     def highlight_status_sales(val):
                         if val == "❌ SHORTAGE":
@@ -3292,15 +3295,18 @@ elif page == "📈 Inventory":
                         st.success(f"✅ **All RM materials available!** You have sufficient stock for all FG sales.")
                 else:
                     st.info("ℹ️ No RM requirements calculated.")
-            else:
+                    
+            elif not has_bom_for_sales:
                 st.info("ℹ️ No BOM defined for sold FG products. Please add BOM entries in Masters → BOM tab.")
                 # Show available BOM entries for debugging
                 available_bom = fetch_data("SELECT DISTINCT fg_product FROM bom_master ORDER BY fg_product")
                 if not available_bom.empty:
                     st.markdown("**Available FG Products in BOM:**")
                     st.dataframe(available_bom, use_container_width=True)
+            else:
+                st.info("ℹ️ No RM requirements calculated from sales data.")
 
-            # Detailed Sales Transactions
+            # Detailed Sales Transactions (show this regardless)
             st.markdown("---")
             st.markdown("#### 📋 Detailed Sales Transactions (FG Products)")
             st.caption("Complete details of all FG product sales with challan numbers, dates, contractor names, and quantities")
@@ -3324,8 +3330,8 @@ elif page == "📈 Inventory":
             contractor_summary = contractor_summary.sort_values('Total Sales Value (₹)', ascending=False)
             st.dataframe(contractor_summary, use_container_width=True, hide_index=True)
 
-            # Detailed RM Breakdown
-            if sales_rm_requirements:
+            # Detailed RM Breakdown - Only if we have data
+            if sales_rm_requirements and has_bom_for_sales:
                 with st.expander("🔍 View Detailed RM Breakdown by Sale Transaction"):
                     st.markdown("**RM Requirements Breakdown:**")
                     st.caption("Shows which sale transactions contributed to each RM requirement")
@@ -3348,7 +3354,7 @@ elif page == "📈 Inventory":
                         st.dataframe(rm_breakdown_df, use_container_width=True, hide_index=True)
                         st.markdown(f"**Total RM Required: {rm_data['total_required']:.2f}**")
 
-                # Consume RM Action
+                # Consume RM Action - Only if we have data and no shortage
                 st.markdown("---")
                 st.markdown("#### 💾 Action: Consume RM Stock for All Sales")
                 st.caption("Click below to deduct RM quantities for all FG sales from your inventory.")
@@ -3358,7 +3364,10 @@ elif page == "📈 Inventory":
                 with consume_col2:
                     consume_date_sales = st.date_input("Date", datetime.now(), key="consume_date_sales_input")
 
-                if st.button(f"💥 Consume RM Stock for All FG Sales", type="primary", key="consume_rm_sales_btn", disabled=has_shortage):
+                # Disable button if there's a shortage
+                consume_disabled = has_shortage if 'has_shortage' in locals() else True
+                
+                if st.button(f"💥 Consume RM Stock for All FG Sales", type="primary", key="consume_rm_sales_btn", disabled=consume_disabled):
                     if has_shortage:
                         st.error("❌ Cannot consume — shortage exists. Please fix shortage first.")
                     else:
@@ -3520,7 +3529,7 @@ elif page == "📈 Inventory":
                                 except Exception as e:
                                     st.error(f"❌ Error consuming RM: {str(e)}")
                     else:
-                        st.info("ℹ️ No RM requirements calculated.")
+                        st.info("ℹ️ No RM requirements calculated.")    
 # ======================= REPORTS =======================
 elif page == "📋 Reports":
     st.subheader("📋 Reports & Analytics")
