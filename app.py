@@ -3237,8 +3237,6 @@ elif page == "📈 Inventory":
 
     with tab4:
         st.markdown("### 🧮 FG to RM Material Requirement Calculator")
-            with tab4:
-        st.markdown("### 🧮 FG to RM Material Requirement Calculator")
         
         # Add BOM Check section
         st.markdown("#### 📋 BOM Requirements Check")
