@@ -3357,8 +3357,8 @@ elif page == "📈 Inventory":
                             'rm_needed': rm_total_needed
                         })
 
-            # CRITICAL: Only proceed if we have requirements and BOM exists for sales
-            if sales_rm_requirements and has_bom_for_sales:
+            # Check if we have BOM requirements
+            if has_bom_for_sales and sales_rm_requirements:
                 sales_calc_rows = []
                 has_shortage = False
                 total_rm_value = 0.0
@@ -3414,8 +3414,8 @@ elif page == "📈 Inventory":
                     shortage_count = len(sales_calc_df[sales_calc_df['Status'] == "❌ SHORTAGE"]) if not sales_calc_df.empty else 0
                     st.metric("⚠️ Items in Shortage", shortage_count)
 
-                # CRITICAL FIX: Check if dataframe is NOT empty before applying style
-                if not sales_calc_df.empty:
+                # CRITICAL FIX: Only apply styling if dataframe has rows
+                if len(sales_calc_df) > 0:
                     def highlight_status_sales(val):
                         if val == "❌ SHORTAGE":
                             return 'background-color: #ffebee; color: #c62828; font-weight: bold'
@@ -3467,7 +3467,7 @@ elif page == "📈 Inventory":
             st.dataframe(contractor_summary, use_container_width=True, hide_index=True)
 
             # Detailed RM Breakdown - Only if we have data
-            if sales_rm_requirements and has_bom_for_sales:
+            if has_bom_for_sales and sales_rm_requirements:
                 with st.expander("🔍 View Detailed RM Breakdown by Sale Transaction"):
                     st.markdown("**RM Requirements Breakdown:**")
                     st.caption("Shows which sale transactions contributed to each RM requirement")
