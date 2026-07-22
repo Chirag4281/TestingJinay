@@ -1233,6 +1233,41 @@ with st.sidebar:
     st.markdown("---")
     st.caption(f"Last Updated: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
 
+def check_rm_availability_for_fg(fg_product, fg_qty):
+    """
+    Check if all required RM materials are available for a given FG product and quantity.
+    Returns (is_available, list_of_shortages)
+    """
+    bom_items = fetch_data("""
+        SELECT rm_product, required_qty
+        FROM bom_master
+        WHERE fg_product = ?
+    """, (fg_product,))
+    
+    if bom_items.empty:
+        return True, []  # No BOM defined, allow sale
+    
+    shortages = []
+    is_available = True
+    
+    for _, bom_row in bom_items.iterrows():
+        rm_product = bom_row['rm_product']
+        required_qty = bom_row['required_qty'] * fg_qty
+        
+        # Get current stock
+        stock_df = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_product,))
+        available_stock = float(stock_df['closing_stock'].iloc[0]) if not stock_df.empty and pd.notna(stock_df['closing_stock'].iloc[0]) else 0.0
+        
+        if available_stock < required_qty:
+            is_available = False
+            shortages.append({
+                'rm_product': rm_product,
+                'required': required_qty,
+                'available': available_stock,
+                'shortage': required_qty - available_stock
+            })
+    
+    return is_available, shortages
 # ======================= DASHBOARD =======================
 if page == "📊 Dashboard":
     st.markdown('<h1 class="main-header">🏭 Jinay ERP Dashboard</h1>', unsafe_allow_html=True)
@@ -1748,41 +1783,6 @@ elif page == "📦 Masters":
         else:
             st.info("No BOM entries defined yet. Please add manually above.")
 
-def check_rm_availability_for_fg(fg_product, fg_qty):
-    """
-    Check if all required RM materials are available for a given FG product and quantity.
-    Returns (is_available, list_of_shortages)
-    """
-    bom_items = fetch_data("""
-        SELECT rm_product, required_qty
-        FROM bom_master
-        WHERE fg_product = ?
-    """, (fg_product,))
-    
-    if bom_items.empty:
-        return True, []  # No BOM defined, allow sale
-    
-    shortages = []
-    is_available = True
-    
-    for _, bom_row in bom_items.iterrows():
-        rm_product = bom_row['rm_product']
-        required_qty = bom_row['required_qty'] * fg_qty
-        
-        # Get current stock
-        stock_df = fetch_data("SELECT closing_stock FROM rm_inventory WHERE product_name = ?", (rm_product,))
-        available_stock = float(stock_df['closing_stock'].iloc[0]) if not stock_df.empty and pd.notna(stock_df['closing_stock'].iloc[0]) else 0.0
-        
-        if available_stock < required_qty:
-            is_available = False
-            shortages.append({
-                'rm_product': rm_product,
-                'required': required_qty,
-                'available': available_stock,
-                'shortage': required_qty - available_stock
-            })
-    
-    return is_available, shortages
 # ======================= PURCHASE ENTRY =======================
 elif page == "🛒 Purchase Entry":
     st.subheader("🛒 Purchase Entry")
