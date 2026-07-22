@@ -3237,7 +3237,12 @@ elif page == "📈 Inventory":
 
     with tab4:
         st.markdown("### 🧮 FG to RM Material Requirement Calculator")
-        
+        df_fg_products = fetch_data("""
+        SELECT product_name FROM product_master
+        WHERE category IN ('FG Product', 'Moulding Product')
+        ORDER BY product_name
+        """)
+        fg_product_list = df_fg_products['product_name'].tolist() if not df_fg_products.empty else []
         # Add BOM Check section
         st.markdown("#### 📋 BOM Requirements Check")
         st.caption("Check what RM materials are required for a specific FG product")
